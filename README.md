@@ -12,6 +12,7 @@ You can do these tasks:
 
 - Simulate a ripple-carry adder from a netlist file.
 - Simulate a four-bit counter from a netlist file.
+- Simulate a register with a scheduled data stream.
 - Open the VCD output in GTKWave and inspect the waveforms.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
@@ -131,6 +132,29 @@ cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output adder.v
 The low-order bit uses index zero.
 The adder produces binary 1000 for this example.
 
+## Register demo
+
+Run a D flip-flop with a scheduled data stream.
+
+```powershell
+cabal run gatework -- --netlist fixtures/register.net --duration 8 --output register.vcd --set d=1 --at 2 d=0 --at 4 d=1 --at 6 d=0
+```
+
+The `--set` option sets the initial value at time zero.
+The `--at` option changes an input at a fixed time.
+The flip-flop samples the data input on each rising clock edge.
+
+| Time | d | q |
+| --- | --- | --- |
+| 0 | 1 | 0 |
+| 1 | 1 | 1 |
+| 2 | 0 | 1 |
+| 3 | 0 | 0 |
+| 4 | 1 | 0 |
+| 5 | 1 | 1 |
+| 6 | 0 | 1 |
+| 7 | 0 | 0 |
+
 ## Sample output
 
 The file `fixtures/counter.golden.vcd` holds the complete counter waveform.
@@ -160,6 +184,24 @@ This excerpt shows the first timestamp:
 Each identifier is one signal.
 The header maps identifiers to signal names.
 
+The file `fixtures/register.golden.vcd` holds the complete register waveform.
+This excerpt shows the first two timestamps:
+
+```text
+#0
+1!
+0"
+0#
+#1
+1"
+1#
+#2
+0!
+0#
+```
+
+Here `!` is the data input `d`, `"` is the output `q`, and `#` is the clock `clk`.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -187,19 +229,21 @@ Clock periods use even integers of at least two.
 ## Verification
 
 The test suite has two parts.
-Deterministic tests cover parsing, validation, counter progression, adder carry propagation, and golden VCD output.
-QuickCheck properties cover gate algebra and full adder correctness.
+Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, and golden VCD output.
+QuickCheck properties cover gate algebra, full adder correctness, and scheduled input sampling.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
 The adder property compares the simulation with integer addition over random four-bit values.
+The scheduled-input property compares each sampled flip-flop value with a reference model.
+The entry-point property shows that both simulation entry points produce identical output.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-The golden test compares the complete counter VCD text.
-CI also runs both demos and compares the counter output with the golden file.
+Golden tests compare the complete counter and register VCD text.
+CI runs all three demos and compares the counter and register output with their golden files.
 
 ## Limitations
 
@@ -207,17 +251,19 @@ The simulator uses two-state logic: low and high.
 Combinational loops stop with an event-limit error.
 All gates use zero delay.
 Zero-delay gates can show combinational settling transients at clock edges.
-Input values cannot change during a run.
+Input changes apply only at scheduled times.
+They do not react to circuit state.
 VCD output uses one module scope and one-bit signals.
 
 ## Roadmap
 
-Later releases can remain independent:
+Release 0.2.0.0 completed scheduled input transitions.
 
-1. Add scheduled input transitions.
-2. Add reset pins and parameterized flip-flops.
-3. Add richer VCD metadata and waveform assertions.
-4. Add more gates and hierarchical netlists.
+Remaining work:
+
+1. Add reset pins and parameterized flip-flops.
+2. Add richer VCD metadata and waveform assertions.
+3. Add more gates and hierarchical netlists.
 
 ## License
 

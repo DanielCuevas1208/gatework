@@ -28,5 +28,9 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/counter.net --duration 8 --output /tmp/counter.vcd
       - name: Compare the counter demo with the golden file
         run: diff fixtures/counter.golden.vcd /tmp/counter.vcd
+      - name: Run the register demo
+        run: cabal run gatework -- --netlist fixtures/register.net --duration 8 --output /tmp/register.vcd --set d=1 --at 2 d=0 --at 4 d=1 --at 6 d=0
+      - name: Compare the register demo with the golden file
+        run: diff fixtures/register.golden.vcd /tmp/register.vcd
       - name: Run the adder demo
         run: cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output /tmp/adder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0

@@ -4,6 +4,7 @@ module Gatework.Simulator
   , signalChanges
   , simulate
   , simulateWithInputs
+  , simulateWithScheduledInputs
   ) where
 
 import Data.List (foldl', nub)
@@ -33,13 +34,20 @@ simulate :: Netlist -> Time -> Either String Simulation
 simulate netlist duration = simulateWithInputs netlist [] duration
 
 simulateWithInputs :: Netlist -> [(String, Logic)] -> Time -> Either String Simulation
-simulateWithInputs netlist inputOverrides duration
+simulateWithInputs netlist inputOverrides =
+  simulateWithScheduledInputs netlist inputOverrides []
+
+simulateWithScheduledInputs :: Netlist -> [(String, Logic)] -> [(Time, String, Logic)]
+  -> Time -> Either String Simulation
+simulateWithScheduledInputs netlist inputOverrides scheduledInputs duration
   | duration < 0 = Left "simulation duration cannot be negative"
   | otherwise = do
       validateInputOverrides netlist inputOverrides
+      validateScheduledInputs netlist scheduledInputs
       let baseState = initialState netlist inputOverrides
           initialEvents = map (initialGateEvent baseState) (netlistGates netlist)
-          queue = addInitialEvents (clockQueue netlist duration) initialEvents
+          scheduledQueue = foldl' addScheduledEvent (clockQueue netlist duration) scheduledInputs
+          queue = addInitialEvents scheduledQueue initialEvents
           initialChanges = initialWaveform netlist baseState
       runQueue netlist duration queue baseState initialChanges
 
@@ -54,6 +62,20 @@ validateInputOverrides netlist overrides = do
       if name `elem` netlistInputs netlist
         then Right ()
         else Left ("input override is not an input: " ++ name)
+
+validateScheduledInputs :: Netlist -> [(Time, String, Logic)] -> Either String ()
+validateScheduledInputs netlist transitions =
+  mapM_ validateTransition transitions
+  where
+    validateTransition (time, signal, _)
+      | time < 0 = Left ("input transition time cannot be negative: " ++ show time)
+      | signal `notElem` netlistInputs netlist =
+          Left ("input transition is not an input: " ++ signal)
+      | otherwise = Right ()
+
+addScheduledEvent :: EventQueue -> (Time, String, Logic) -> EventQueue
+addScheduledEvent queue (time, signal, value) =
+  Map.insertWith (flip (++)) time [SignalEvent signal value] queue
 
 initialState :: Netlist -> [(String, Logic)] -> State
 initialState netlist overrides =
