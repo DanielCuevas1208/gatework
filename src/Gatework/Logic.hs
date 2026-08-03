@@ -13,7 +13,7 @@ import Data.List (foldl')
 data Logic = Low | High
   deriving (Eq, Ord, Read, Show)
 
-data GateType = And | Or | Xor | Not
+data GateType = And | Or | Xor | Not | Nand | Nor | Xnor
   deriving (Eq, Ord, Read, Show)
 
 gateArity :: GateType -> Int
@@ -21,6 +21,9 @@ gateArity And = 2
 gateArity Or = 2
 gateArity Xor = 2
 gateArity Not = 1
+gateArity Nand = 2
+gateArity Nor = 2
+gateArity Xnor = 2
 
 parseGateType :: String -> Maybe GateType
 parseGateType value = case value of
@@ -28,6 +31,9 @@ parseGateType value = case value of
   "OR" -> Just Or
   "XOR" -> Just Xor
   "NOT" -> Just Not
+  "NAND" -> Just Nand
+  "NOR" -> Just Nor
+  "XNOR" -> Just Xnor
   _ -> Nothing
 
 parseLogic :: String -> Maybe Logic
@@ -44,6 +50,11 @@ evalGate :: GateType -> [Logic] -> Logic
 evalGate And inputs = if all (== High) inputs then High else Low
 evalGate Or inputs = if any (== High) inputs then High else Low
 evalGate Xor inputs = foldl' xorLogic Low inputs
+evalGate Nand inputs = if all (== High) inputs then Low else High
+evalGate Nor inputs = if any (== High) inputs then Low else High
+evalGate Xnor inputs = case foldl' xorLogic Low inputs of
+  High -> Low
+  Low -> High
 evalGate Not inputs = case inputs of
   input : _ -> invert input
   [] -> Low

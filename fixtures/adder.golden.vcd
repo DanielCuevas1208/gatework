@@ -1,0 +1,82 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.5.0.0
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! a0 $end
+$var wire 1 " a1 $end
+$var wire 1 # a2 $end
+$var wire 1 $ a3 $end
+$var wire 1 % b0 $end
+$var wire 1 & b1 $end
+$var wire 1 ' b2 $end
+$var wire 1 ( b3 $end
+$var wire 1 ) cin $end
+$var wire 1 * sum0 $end
+$var wire 1 + sum1 $end
+$var wire 1 , sum2 $end
+$var wire 1 - sum3 $end
+$var wire 1 . cout $end
+$var wire 1 / p0 $end
+$var wire 1 0 g0 $end
+$var wire 1 1 h0 $end
+$var wire 1 2 c1 $end
+$var wire 1 3 p1 $end
+$var wire 1 4 g1 $end
+$var wire 1 5 h1 $end
+$var wire 1 6 c2 $end
+$var wire 1 7 p2 $end
+$var wire 1 8 g2 $end
+$var wire 1 9 h2 $end
+$var wire 1 : c3 $end
+$var wire 1 ; p3 $end
+$var wire 1 < g3 $end
+$var wire 1 = h3 $end
+$upscope $end
+$enddefinitions $end
+#0
+1!
+1"
+0#
+0$
+1%
+0&
+1'
+0(
+0)
+0*
+0+
+1+
+0+
+0,
+1,
+0,
+0-
+1-
+0.
+0/
+00
+10
+01
+02
+12
+03
+13
+04
+05
+15
+06
+16
+07
+17
+08
+09
+19
+0:
+1:
+0;
+0<
+0=

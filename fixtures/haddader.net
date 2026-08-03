@@ -1,0 +1,45 @@
+# Hierarchical ripple-carry adder.
+# The half adder and full adder are reusable modules.
+module halfadd (a,b) -> (sum,carry)
+  gate XOR xsum (a,b) -> sum
+  gate AND carry (a,b) -> carry
+end
+
+module fulladd (a,b,cin) -> (sum,cout)
+  wire p
+  wire g
+  wire h
+  instance halfadd u1 (a,b) -> (p,g)
+  instance halfadd u2 (p,cin) -> (sum,h)
+  gate OR cout (g,h) -> cout
+end
+
+input a0
+input a1
+input a2
+input a3
+input b0
+input b1
+input b2
+input b3
+input cin
+
+output sum0
+output sum1
+output sum2
+output sum3
+output cout
+
+wire sum0
+wire sum1
+wire sum2
+wire sum3
+wire cout
+wire c1
+wire c2
+wire c3
+
+instance fulladd f0 (a0,b0,cin) -> (sum0,c1)
+instance fulladd f1 (a1,b1,c1) -> (sum1,c2)
+instance fulladd f2 (a2,b2,c2) -> (sum2,c3)
+instance fulladd f3 (a3,b3,c3) -> (sum3,cout)

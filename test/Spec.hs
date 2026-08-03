@@ -80,6 +80,24 @@ main = do
       putStrLn ("reg2 fixture failed to parse: " ++ message)
       exitFailure
     Right netlist -> pure netlist
+  gatesSource <- readFile "fixtures/gates.net"
+  gates <- case parseNetlist gatesSource of
+    Left message -> do
+      putStrLn ("gates fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
+  haddaderSource <- readFile "fixtures/haddader.net"
+  haddader <- case parseNetlist haddaderSource of
+    Left message -> do
+      putStrLn ("haddader fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
+  hcounterSource <- readFile "fixtures/hcounter.net"
+  hcounter <- case parseNetlist hcounterSource of
+    Left message -> do
+      putStrLn ("hcounter fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
   deterministic <- sequence
     [ testParser
     , testParserAcceptsCommentsAndBlankLines
@@ -126,6 +144,27 @@ main = do
     , testAssertionBeyondDuration
     , testVCDCommentMetadata
     , testGoldenAssertVCD
+    , testNandNorXnorTruth
+    , testGatesFixture
+    , testModuleHalfAdd
+    , testModuleNestedFullAdd
+    , testModuleClockInputPort
+    , testModuleAssertion
+    , testHierarchicalAdder
+    , testHierarchicalCounter
+    , testInstanceUnknownModule
+    , testInstancePortCountMismatch
+    , testUnterminatedModule
+    , testEmptyModule
+    , testDuplicateModule
+    , testModuleRejectsInputDeclaration
+    , testModuleRejectsUndeclaredGateInput
+    , testModuleGateOutputNotWire
+    , testCircularModuleInstantiation
+    , testGoldenGatesVCD
+    , testGoldenHaddaderVCD
+    , testGoldenHcounterVCD
+    , testGoldenAdderVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -153,6 +192,12 @@ main = do
     , ("register width matches a per-bit reference", quickCheckResult (propRegisterWidthSampling reg2))
     , ("scheduled entry point matches the direct entry point", quickCheckResult (propEquivalentEntryPoints counter))
     , ("assertions follow the simulated waveform", quickCheckResult (propAssertionSoundness counter))
+    , ("NAND inverts AND", quickCheckResult propNandInvertsAnd)
+    , ("NOR inverts OR", quickCheckResult propNorInvertsOr)
+    , ("XNOR inverts XOR", quickCheckResult propXnorInvertsXor)
+    , ("hierarchical adder matches the flat adder", quickCheckResult (propHierarchicalAdderMatchesFlat adder haddader))
+    , ("hierarchical counter matches the flat counter", quickCheckResult (propHierarchicalCounterMatchesFlat counter hcounter))
+    , ("gates fixture follows the gate truth tables", quickCheckResult (propGatesFixture gates))
     ]
     $ \(label, action) -> do
       result <- action
@@ -618,6 +663,388 @@ testGoldenAssertVCD = do
             [(3, "a", High), (5, "a", Low)] 6
         pure (renderVCD simulation)
   check "assert VCD matches golden file" (actual == Right golden)
+
+testNandNorXnorTruth :: IO Bool
+testNandNorXnorTruth =
+  check "NAND, NOR, and XNOR follow their truth tables" $
+    and
+      [ evalGate Nand [Low, Low] == High
+      , evalGate Nand [Low, High] == High
+      , evalGate Nand [High, Low] == High
+      , evalGate Nand [High, High] == Low
+      , evalGate Nor [Low, Low] == High
+      , evalGate Nor [Low, High] == Low
+      , evalGate Nor [High, Low] == Low
+      , evalGate Nor [High, High] == Low
+      , evalGate Xnor [Low, Low] == High
+      , evalGate Xnor [Low, High] == Low
+      , evalGate Xnor [High, Low] == Low
+      , evalGate Xnor [High, High] == High
+      ]
+
+testGatesFixture :: IO Bool
+testGatesFixture = do
+  source <- readFile "fixtures/gates.net"
+  let simulation = do
+        netlist <- parseNetlist source
+        simulateWithScheduledInputs netlist [("a", Low), ("b", High)]
+          [ (2, "a", High), (2, "b", High)
+          , (4, "a", High), (4, "b", Low)
+          , (6, "a", Low), (6, "b", Low)
+          ] 7
+  check "gates fixture asserts the full truth table" $ case simulation of
+    Right result ->
+      null (simulationFailures result)
+        && length (simulationAssertions result) == 12
+        && valueAt result "nand_out" 0 == High
+        && valueAt result "nand_out" 2 == Low
+        && valueAt result "nand_out" 4 == High
+        && valueAt result "nand_out" 6 == High
+        && valueAt result "nor_out" 0 == Low
+        && valueAt result "nor_out" 6 == High
+        && valueAt result "xnor_out" 0 == Low
+        && valueAt result "xnor_out" 2 == High
+        && valueAt result "xnor_out" 4 == Low
+        && valueAt result "xnor_out" 6 == High
+    Left _ -> False
+
+testModuleHalfAdd :: IO Bool
+testModuleHalfAdd =
+  let source = unlines
+        [ "module halfadd (a,b) -> (sum,carry)"
+        , "  gate XOR xsum (a,b) -> sum"
+        , "  gate AND xcarry (a,b) -> carry"
+        , "end"
+        , "input a"
+        , "input b"
+        , "output sum"
+        , "output carry"
+        , "wire sum"
+        , "wire carry"
+        , "instance halfadd u1 (a,b) -> (sum,carry)"
+        ]
+  in case parseNetlist source of
+    Left _ -> check "a half adder module flattens into gates" False
+    Right netlist ->
+      check "a half adder module flattens into gates" $ case
+        simulateWithInputs netlist [("a", High), ("b", Low)] 0 of
+          Right simulation ->
+            finalValue simulation "sum" == Just High
+              && finalValue simulation "carry" == Just Low
+          Left _ -> False
+
+testModuleNestedFullAdd :: IO Bool
+testModuleNestedFullAdd =
+  let source = unlines
+        [ "module halfadd (a,b) -> (sum,carry)"
+        , "  gate XOR xsum (a,b) -> sum"
+        , "  gate AND xcarry (a,b) -> carry"
+        , "end"
+        , "module fulladd (a,b,cin) -> (sum,cout)"
+        , "  wire p"
+        , "  wire g"
+        , "  wire h"
+        , "  instance halfadd u1 (a,b) -> (p,g)"
+        , "  instance halfadd u2 (p,cin) -> (sum,h)"
+        , "  gate OR xcarry (g,h) -> cout"
+        , "end"
+        , "input a"
+        , "input b"
+        , "input cin"
+        , "output sum"
+        , "output cout"
+        , "wire sum"
+        , "wire cout"
+        , "instance fulladd f (a,b,cin) -> (sum,cout)"
+        ]
+  in case parseNetlist source of
+    Left _ -> check "a full adder nests two half adders" False
+    Right netlist ->
+      check "a full adder nests two half adders" $ case
+        simulateWithInputs netlist [("a", High), ("b", High), ("cin", High)] 0 of
+          Right simulation ->
+            finalValue simulation "sum" == Just High
+              && finalValue simulation "cout" == Just High
+          Left _ -> False
+
+testModuleClockInputPort :: IO Bool
+testModuleClockInputPort =
+  let source = unlines
+        [ "module reg (clk,d) -> (q)"
+        , "  dff state clock=clk d=d q=q init=0"
+        , "end"
+        , "input d"
+        , "output q"
+        , "clock clk period=2"
+        , "instance reg r (clk,d) -> (q)"
+        ]
+  in case parseNetlist source of
+    Left _ -> check "a module clock port drives its flip-flops" False
+    Right netlist -> check "a module clock port drives its flip-flops" $ case
+      simulateWithInputs netlist [("d", High)] 4 of
+        Right simulation -> signalChanges simulation "q" == [(0, Low), (1, High)]
+        Left _ -> False
+
+testModuleAssertion :: IO Bool
+testModuleAssertion =
+  let source = unlines
+        [ "module inv (a) -> (out)"
+        , "  gate NOT g (a) -> out"
+        , "  assert out = 0 at 1"
+        , "end"
+        , "input a"
+        , "output out"
+        , "wire out"
+        , "instance inv u (a) -> (out)"
+        ]
+  in case parseNetlist source of
+    Left _ -> check "assertions inside modules are checked" False
+    Right netlist -> check "assertions inside modules are checked" $ case
+      simulateWithInputs netlist [("a", High)] 2 of
+        Right simulation -> null (simulationFailures simulation)
+        Left _ -> False
+
+testHierarchicalAdder :: IO Bool
+testHierarchicalAdder = do
+  source <- readFile "fixtures/haddader.net"
+  let simulation = do
+        netlist <- parseNetlist source
+        simulateWithInputs netlist
+          [ ("a0", High), ("a1", High), ("a2", Low), ("a3", Low)
+          , ("b0", High), ("b1", Low), ("b2", High), ("b3", Low)
+          , ("cin", Low)
+          ] 0
+  check "hierarchical adder computes three plus five" $ case simulation of
+    Right result ->
+      and
+        [ finalValue result "sum0" == Just Low
+        , finalValue result "sum1" == Just Low
+        , finalValue result "sum2" == Just Low
+        , finalValue result "sum3" == Just High
+        , finalValue result "cout" == Just Low
+        ]
+    Left _ -> False
+
+testHierarchicalCounter :: IO Bool
+testHierarchicalCounter = do
+  source <- readFile "fixtures/hcounter.net"
+  let simulation = do
+        netlist <- parseNetlist source
+        simulate netlist 8
+  check "hierarchical counter advances on clock edges" $ case simulation of
+    Right result ->
+      and
+        [ signalChanges result "q0" == [(0, Low), (1, High), (3, Low), (5, High), (7, Low)]
+        , signalChanges result "q1" == [(0, Low), (3, High), (7, Low)]
+        , signalChanges result "q2" == [(0, Low), (7, High)]
+        , signalChanges result "q3" == [(0, Low)]
+        ]
+    Left _ -> False
+
+testInstanceUnknownModule :: IO Bool
+testInstanceUnknownModule =
+  check "instances require a known module" $ isLeft $
+    parseNetlist "input a\nwire out\ninstance missing u (a) -> (out)"
+
+testInstancePortCountMismatch :: IO Bool
+testInstancePortCountMismatch =
+  check "instances reject port count mismatches" $
+    isLeft (parseNetlist (unlines
+      [ "module half (a,b) -> (s,c)"
+      , "  gate XOR g (a,b) -> s"
+      , "  gate AND h (a,b) -> c"
+      , "end"
+      , "input a"
+      , "wire s"
+      , "wire c"
+      , "instance half u (a) -> (s,c)"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "module half (a,b) -> (s,c)"
+      , "  gate XOR g (a,b) -> s"
+      , "  gate AND h (a,b) -> c"
+      , "end"
+      , "input a"
+      , "input b"
+      , "wire s"
+      , "wire c"
+      , "instance half u (a,b) -> (s)"
+      ]))
+
+testUnterminatedModule :: IO Bool
+testUnterminatedModule =
+  check "parser rejects unterminated modules" $ isLeft $
+    parseNetlist "module m (a) -> (out)\n  gate NOT g (a) -> out\ninput a\nwire out"
+
+testEmptyModule :: IO Bool
+testEmptyModule =
+  check "parser rejects empty module bodies" $ isLeft $
+    parseNetlist "module m (a) -> (out)\nend\ninput a\nwire out"
+
+testDuplicateModule :: IO Bool
+testDuplicateModule =
+  check "parser rejects duplicate modules" $ isLeft $
+    parseNetlist (unlines
+      [ "module m (a) -> (out)"
+      , "  gate NOT g (a) -> out"
+      , "end"
+      , "module m (a) -> (out)"
+      , "  gate NOT g (a) -> out"
+      , "end"
+      ])
+
+testModuleRejectsInputDeclaration :: IO Bool
+testModuleRejectsInputDeclaration =
+  check "modules reject input declarations" $ isLeft $
+    parseNetlist (unlines
+      [ "module m (a) -> (out)"
+      , "  input x"
+      , "  gate NOT g (a) -> out"
+      , "end"
+      ])
+
+testModuleRejectsUndeclaredGateInput :: IO Bool
+testModuleRejectsUndeclaredGateInput =
+  check "modules reject undeclared gate inputs" $ isLeft $
+    parseNetlist (unlines
+      [ "module m (a) -> (out)"
+      , "  gate NOT g (missing) -> out"
+      , "end"
+      , "input a"
+      , "wire out"
+      , "instance m u (a) -> (out)"
+      ])
+
+testModuleGateOutputNotWire :: IO Bool
+testModuleGateOutputNotWire =
+  check "modules require gate outputs to be declared" $ isLeft $
+    parseNetlist (unlines
+      [ "module m (a) -> (out)"
+      , "  gate NOT g (a) -> missing"
+      , "end"
+      , "input a"
+      , "wire out"
+      , "instance m u (a) -> (out)"
+      ])
+
+testCircularModuleInstantiation :: IO Bool
+testCircularModuleInstantiation =
+  check "parser rejects circular module instantiation" $ isLeft $
+    parseNetlist (unlines
+      [ "module loop (a) -> (out)"
+      , "  instance loop inner (a) -> (out)"
+      , "end"
+      , "input a"
+      , "wire out"
+      , "instance loop top (a) -> (out)"
+      ])
+
+testGoldenGatesVCD :: IO Bool
+testGoldenGatesVCD = do
+  source <- readFile "fixtures/gates.net"
+  golden <- readFile "fixtures/gates.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("a", Low), ("b", High)]
+            [ (2, "a", High), (2, "b", High)
+            , (4, "a", High), (4, "b", Low)
+            , (6, "a", Low), (6, "b", Low)
+            ] 7
+        pure (renderVCD simulation)
+  check "gates VCD matches golden file" (actual == Right golden)
+
+testGoldenHaddaderVCD :: IO Bool
+testGoldenHaddaderVCD = do
+  source <- readFile "fixtures/haddader.net"
+  golden <- readFile "fixtures/haddader.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithInputs netlist
+          [ ("a0", High), ("a1", High), ("a2", Low), ("a3", Low)
+          , ("b0", High), ("b1", Low), ("b2", High), ("b3", Low)
+          , ("cin", Low)
+          ] 0
+        pure (renderVCD simulation)
+  check "hierarchical adder VCD matches golden file" (actual == Right golden)
+
+testGoldenHcounterVCD :: IO Bool
+testGoldenHcounterVCD = do
+  source <- readFile "fixtures/hcounter.net"
+  golden <- readFile "fixtures/hcounter.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulate netlist 8
+        pure (renderVCD simulation)
+  check "hierarchical counter VCD matches golden file" (actual == Right golden)
+
+testGoldenAdderVCD :: IO Bool
+testGoldenAdderVCD = do
+  source <- readFile "fixtures/adder.net"
+  golden <- readFile "fixtures/adder.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithInputs netlist
+          [ ("a0", High), ("a1", High), ("a2", Low), ("a3", Low)
+          , ("b0", High), ("b1", Low), ("b2", High), ("b3", Low)
+          , ("cin", Low)
+          ] 0
+        pure (renderVCD simulation)
+  check "adder VCD matches golden file" (actual == Right golden)
+
+propNandInvertsAnd :: Logical -> Logical -> Bool
+propNandInvertsAnd (Logical left) (Logical right) =
+  evalGate Nand [left, right] == not1 (and2 left right)
+
+propNorInvertsOr :: Logical -> Logical -> Bool
+propNorInvertsOr (Logical left) (Logical right) =
+  evalGate Nor [left, right] == not1 (or2 left right)
+
+propXnorInvertsXor :: Logical -> Logical -> Bool
+propXnorInvertsXor (Logical left) (Logical right) =
+  evalGate Xnor [left, right] == not1 (xor2 left right)
+
+propHierarchicalAdderMatchesFlat :: Netlist -> Netlist -> Property
+propHierarchicalAdderMatchesFlat flat hierarchical =
+  forAll (choose (0, 15)) $ \a ->
+    forAll (choose (0, 15)) $ \b ->
+      forAll (elements [Low, High]) $ \carryIn ->
+        let expected = a + b + (if carryIn == High then 1 else 0)
+        in case ( simulateWithInputs flat (adderInputs a b carryIn) 0
+                , simulateWithInputs hierarchical (adderInputs a b carryIn) 0
+                ) of
+          (Right flatResult, Right hierarchicalResult) ->
+            property
+              ( resultToInt flatResult == expected
+                  && resultToInt hierarchicalResult == expected
+              )
+          _ -> property False
+
+propHierarchicalCounterMatchesFlat :: Netlist -> Netlist -> Property
+propHierarchicalCounterMatchesFlat flat hierarchical =
+  forAll (choose (0, 30)) $ \duration ->
+    case (simulate flat duration, simulate hierarchical duration) of
+      (Right flatResult, Right hierarchicalResult) ->
+        property (all (sameBits flatResult hierarchicalResult) [0 .. duration])
+      _ -> property False
+  where
+    sameBits flatResult hierarchicalResult time =
+      all
+        (\name -> valueAt flatResult name time == valueAt hierarchicalResult name time)
+        (map fst counterBits)
+
+propGatesFixture :: Netlist -> Property
+propGatesFixture netlist =
+  forAll (elements [Low, High]) $ \a ->
+    forAll (elements [Low, High]) $ \b ->
+      case simulateWithInputs netlist [("a", a), ("b", b)] 7 of
+        Right simulation ->
+          property
+            ( valueAt simulation "nand_out" 6 == evalGate Nand [a, b]
+                && valueAt simulation "nor_out" 6 == evalGate Nor [a, b]
+                && valueAt simulation "xnor_out" 6 == evalGate Xnor [a, b]
+            )
+        Left _ -> property False
 
 propAndCommutative :: Logical -> Logical -> Bool
 propAndCommutative (Logical left) (Logical right) =

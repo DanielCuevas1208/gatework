@@ -1,0 +1,48 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.5.0.0
+$end
+$comment
+  assert nand_out = 1 at 0
+  assert nand_out = 0 at 2
+  assert nand_out = 1 at 4
+  assert nand_out = 1 at 6
+  assert nor_out = 0 at 0
+  assert nor_out = 0 at 2
+  assert nor_out = 0 at 4
+  assert nor_out = 1 at 6
+  assert xnor_out = 0 at 0
+  assert xnor_out = 1 at 2
+  assert xnor_out = 0 at 4
+  assert xnor_out = 1 at 6
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! a $end
+$var wire 1 " b $end
+$var wire 1 # nand_out $end
+$var wire 1 $ nor_out $end
+$var wire 1 % xnor_out $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+1"
+0#
+1#
+0$
+0%
+#2
+1!
+0#
+1%
+#4
+0"
+1#
+0%
+#6
+0!
+1$
+1%

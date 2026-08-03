@@ -1,0 +1,31 @@
+# Hierarchical four-bit binary counter.
+# A flop module holds the state for one bit.
+module flop (clk,d) -> (q)
+  dff state clock=clk d=d q=q init=0
+end
+
+module counter4 (clk) -> (q0,q1,q2,q3)
+  wire d0
+  wire d1
+  wire carry2
+  wire d2
+  wire carry3
+  wire d3
+  gate NOT invert0 (q0) -> d0
+  gate XOR next1 (q1,q0) -> d1
+  gate AND carry1 (q1,q0) -> carry2
+  gate XOR next2 (q2,carry2) -> d2
+  gate AND carry2 (q2,carry2) -> carry3
+  gate XOR next3 (q3,carry3) -> d3
+  instance flop f0 (clk,d0) -> (q0)
+  instance flop f1 (clk,d1) -> (q1)
+  instance flop f2 (clk,d2) -> (q2)
+  instance flop f3 (clk,d3) -> (q3)
+end
+
+output q0
+output q1
+output q2
+output q3
+clock clk period=2
+instance counter4 counter (clk) -> (q0,q1,q2,q3)

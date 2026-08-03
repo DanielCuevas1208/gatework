@@ -1,0 +1,27 @@
+# Universal gate truth demo.
+# The run walks the complete truth table of NAND, NOR, and XNOR.
+input a
+input b
+output nand_out
+output nor_out
+output xnor_out
+wire nand_out
+wire nor_out
+wire xnor_out
+
+gate NAND nand (a,b) -> nand_out
+gate NOR nor (a,b) -> nor_out
+gate XNOR xnor (a,b) -> xnor_out
+
+assert nand_out = 1 at 0
+assert nand_out = 0 at 2
+assert nand_out = 1 at 4
+assert nand_out = 1 at 6
+assert nor_out = 0 at 0
+assert nor_out = 0 at 2
+assert nor_out = 0 at 4
+assert nor_out = 1 at 6
+assert xnor_out = 0 at 0
+assert xnor_out = 1 at 2
+assert xnor_out = 0 at 4
+assert xnor_out = 1 at 6

@@ -1,11 +1,12 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.4.0.0
+version:            0.5.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
   flip-flops with an event-driven scheduler, and writes standard VCD
-  waveform files. GTKWave and other waveform viewers can open the output.
+  waveform files. Modules and instances build reusable circuits.
+  GTKWave and other waveform viewers can open the output.
 license:            BSD-3-Clause
 license-file:       LICENSE
 author:             Gatework contributors
