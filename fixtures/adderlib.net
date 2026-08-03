@@ -1,0 +1,17 @@
+# Reusable adder module library.
+# A library file holds only module definitions.
+# Load this file with the --library option.
+
+module halfadd (a,b) -> (sum,carry)
+  gate XOR xsum (a,b) -> sum
+  gate AND carry (a,b) -> carry
+end
+
+module fulladd (a,b,cin) -> (sum,cout)
+  wire p
+  wire g
+  wire h
+  instance halfadd u1 (a,b) -> (p,g)
+  instance halfadd u2 (p,cin) -> (sum,h)
+  gate OR cout (g,h) -> cout
+end

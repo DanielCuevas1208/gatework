@@ -3,9 +3,17 @@ module Main (main) where
 import Control.Monad (forM)
 import Data.Bits (xor)
 import Data.Either (isLeft)
-import Data.List (foldl', sortOn)
+import Data.List (foldl', isPrefixOf, sortOn)
 import Gatework.Logic (GateType (..), Logic (..), evalGate, parseLogic)
-import Gatework.Netlist (Assertion (..), Netlist (..), netlistAssertions, netlistSignals, parseNetlist)
+import Gatework.Netlist
+  ( Assertion (..)
+  , Netlist (..)
+  , netlistAssertions
+  , netlistSignals
+  , parseNetlist
+  , parseNetlistFileWithLibraries
+  , parseNetlistWithLibraries
+  )
 import Gatework.Simulator
   ( AssertionFailure (..)
   , Simulation
@@ -130,6 +138,14 @@ main = do
       putStrLn ("shared fixture failed to parse: " ++ message)
       exitFailure
     Right netlist -> pure netlist
+  adderlibSource <- readFile "fixtures/adderlib.net"
+  libadderSource <- readFile "fixtures/libadder.net"
+  libadder <- case
+    parseNetlistWithLibraries [("fixtures/adderlib.net", adderlibSource)] libadderSource of
+      Left message -> do
+        putStrLn ("libadder fixture failed to parse: " ++ message)
+        exitFailure
+      Right netlist -> pure netlist
   deterministic <- sequence
     [ testParser
     , testParserAcceptsCommentsAndBlankLines
@@ -230,6 +246,16 @@ main = do
     , testGoldenBusVCD
     , testSharedBusFixture
     , testGoldenSharedVCD
+    , testLibraryNetlistUsesLibraryModules
+    , testLibraryModulesReferenceEachOther
+    , testLibraryDuplicateModule
+    , testLibraryDuplicateAcrossFiles
+    , testLibraryRejectsTopLevelDeclarations
+    , testLibraryRejectsSyntaxError
+    , testLibraryUnknownModuleStillFails
+    , testLibraryFileEntryPoint
+    , testLibraryMissingFileFails
+    , testGoldenLibadderVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -273,6 +299,7 @@ main = do
     , ("bus register samples every bit", quickCheckResult propBusRegisterSampling)
     , ("bus module matches the flat circuit", quickCheckResult propBusModuleMatchesFlat)
     , ("shared bus follows the resolution model", quickCheckResult (propSharedBusResolution shared))
+    , ("library adder matches the flat adder", quickCheckResult (propLibraryAdderMatchesFlat adder libadder))
     ]
     $ \(label, action) -> do
       result <- action
@@ -1563,6 +1590,163 @@ testGoldenSharedVCD = do
         pure (renderVCD simulation)
   check "shared bus VCD matches golden file" (actual == Right golden)
 
+testLibraryNetlistUsesLibraryModules :: IO Bool
+testLibraryNetlistUsesLibraryModules =
+  check "a netlist uses modules from a library file" $ case
+    parseNetlistWithLibraries
+      [ ( "adderlib.net"
+        , unlines
+            [ "module halfadd (a,b) -> (sum,carry)"
+            , "  gate XOR xsum (a,b) -> sum"
+            , "  gate AND carry (a,b) -> carry"
+            , "end"
+            ]
+        )
+      ]
+      (unlines
+        [ "input a"
+        , "input b"
+        , "wire s"
+        , "wire c"
+        , "instance halfadd u1 (a,b) -> (s,c)"
+        ]) of
+      Right netlist ->
+        length (netlistGates netlist) == 2
+          && netlistSignals netlist == ["a", "b", "s", "c"]
+      Left _ -> False
+
+testLibraryModulesReferenceEachOther :: IO Bool
+testLibraryModulesReferenceEachOther =
+  check "library modules can use modules from another library" $ case
+    parseNetlistWithLibraries
+      [ ( "base.net"
+        , unlines
+            [ "module inv (a) -> (n)"
+            , "  gate NOT g (a) -> n"
+            , "end"
+            ]
+        )
+      , ( "top.net"
+        , unlines
+            [ "module twice (a) -> (n)"
+            , "  wire m"
+            , "  instance inv u1 (a) -> (m)"
+            , "  instance inv u2 (m) -> (n)"
+            , "end"
+            ]
+        )
+      ]
+      (unlines
+        [ "input a"
+        , "wire n"
+        , "instance twice u (a) -> (n)"
+        ]) of
+      Right netlist -> length (netlistGates netlist) == 2
+      Left _ -> False
+
+testLibraryDuplicateModule :: IO Bool
+testLibraryDuplicateModule =
+  check "a netlist cannot shadow a library module" $ case
+    parseNetlistWithLibraries
+      [ ( "adderlib.net"
+        , "module halfadd (a,b) -> (sum,carry)\n  gate AND carry (a,b) -> carry\nend"
+        )
+      ]
+      (unlines
+        [ "module halfadd (a,b) -> (sum,carry)"
+        , "  gate XOR xsum (a,b) -> sum"
+        , "end"
+        , "input a"
+        , "input b"
+        , "wire s"
+        , "instance halfadd u1 (a,b) -> (s)"
+        ]) of
+      Right _ -> False
+      Left message -> "duplicate module: halfadd" `elem` [message]
+
+testLibraryDuplicateAcrossFiles :: IO Bool
+testLibraryDuplicateAcrossFiles =
+  check "two libraries cannot define the same module" $ case
+    parseNetlistWithLibraries
+      [ ( "first.net", "module m (a) -> (b)\n  gate NOT g (a) -> b\nend" )
+      , ( "second.net", "module m (a) -> (b)\n  gate NOT g (a) -> b\nend" )
+      ]
+      "input a\nwire b\ninstance m u (a) -> (b)\n" of
+      Right _ -> False
+      Left message -> "second.net: duplicate module: m" `elem` [message]
+
+testLibraryRejectsTopLevelDeclarations :: IO Bool
+testLibraryRejectsTopLevelDeclarations =
+  check "a library file rejects top-level declarations" $ case
+    parseNetlistWithLibraries
+      [ ( "badlib.net"
+        , unlines
+            [ "module m (a) -> (b)"
+            , "  gate NOT g (a) -> b"
+            , "end"
+            , "input a"
+            ]
+        )
+      ]
+      "input a\nwire b\ninstance m u (a) -> (b)\n" of
+      Right _ -> False
+      Left message -> "library files may contain only module definitions" `elem` [message]
+
+testLibraryRejectsSyntaxError :: IO Bool
+testLibraryRejectsSyntaxError =
+  check "a library syntax error names the file" $ case
+    parseNetlistWithLibraries
+      [ ( "broken.net", "module m (a) -> (b)\n  gate NOT g (a) -> b\n  bad line\nend\n" )]
+      "input a\nwire b\ninstance m u (a) -> (b)\n" of
+      Right _ -> False
+      Left message -> "broken.net:" `isPrefixOf` message
+
+testLibraryUnknownModuleStillFails :: IO Bool
+testLibraryUnknownModuleStillFails =
+  check "a missing module still fails with a library loaded" $ case
+    parseNetlistWithLibraries
+      [ ( "adderlib.net"
+        , "module halfadd (a,b) -> (sum,carry)\n  gate AND carry (a,b) -> carry\nend"
+        )
+      ]
+      "input a\ninput b\nwire s\ninstance missing u (a,b) -> (s)\n" of
+      Right _ -> False
+      Left message -> "instance references an unknown module: missing" `elem` [message]
+
+testLibraryFileEntryPoint :: IO Bool
+testLibraryFileEntryPoint = do
+  parsed <- parseNetlistFileWithLibraries ["fixtures/adderlib.net"] "fixtures/libadder.net"
+  case parsed of
+    Right netlist ->
+      check "the file entry point loads library modules" $
+        length (netlistGates netlist) == 20
+    Left _ -> check "the file entry point loads library modules" False
+
+testLibraryMissingFileFails :: IO Bool
+testLibraryMissingFileFails = do
+  parsed <- parseNetlistFileWithLibraries ["fixtures/missing.net"] "fixtures/libadder.net"
+  case parsed of
+    Left message ->
+      check "a missing library file reports a clear error" $
+        "cannot read library file" `elem` [message]
+    Right _ -> check "a missing library file reports a clear error" False
+
+testGoldenLibadderVCD :: IO Bool
+testGoldenLibadderVCD = do
+  librarySource <- readFile "fixtures/adderlib.net"
+  source <- readFile "fixtures/libadder.net"
+  golden <- readFile "fixtures/haddader.golden.vcd"
+  let actual = do
+        netlist <-
+          parseNetlistWithLibraries [("fixtures/adderlib.net", librarySource)] source
+        simulation <- simulateWithInputs netlist
+          [ ("a0", High), ("a1", High), ("a2", Low), ("a3", Low)
+          , ("b0", High), ("b1", Low), ("b2", High), ("b3", Low)
+          , ("cin", Low)
+          ] 0
+        pure (renderVCD simulation)
+  check "library adder VCD matches the hierarchical golden file" (actual == Right golden)
+
 evalTwoState :: GateType -> [Logic] -> Logic
 evalTwoState And inputs = if all (== High) inputs then High else Low
 evalTwoState Or inputs = if any (== High) inputs then High else Low
@@ -1805,6 +1989,22 @@ propHierarchicalAdderMatchesFlat flat hierarchical =
             property
               ( resultToInt flatResult == expected
                   && resultToInt hierarchicalResult == expected
+              )
+          _ -> property False
+
+propLibraryAdderMatchesFlat :: Netlist -> Netlist -> Property
+propLibraryAdderMatchesFlat flat libraryBuilt =
+  forAll (choose (0, 15)) $ \a ->
+    forAll (choose (0, 15)) $ \b ->
+      forAll (elements [Low, High]) $ \carryIn ->
+        let expected = a + b + (if carryIn == High then 1 else 0)
+        in case ( simulateWithInputs flat (adderInputs a b carryIn) 0
+                , simulateWithInputs libraryBuilt (adderInputs a b carryIn) 0
+                ) of
+          (Right flatResult, Right libraryResult) ->
+            property
+              ( resultToInt flatResult == expected
+                  && resultToInt libraryResult == expected
               )
           _ -> property False
 
