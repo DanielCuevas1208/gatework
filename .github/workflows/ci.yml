@@ -68,6 +68,14 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output /tmp/adder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
       - name: Compare the adder demo with the golden file
         run: diff fixtures/adder.golden.vcd /tmp/adder.vcd
+      - name: Run the tri-state demo
+        run: cabal run gatework -- --netlist fixtures/tristate.net --duration 8 --output /tmp/tristate.vcd --set d=0,en=0 --at 2 en=1 --at 4 d=1 --at 6 en=0
+      - name: Compare the tri-state demo with the golden file
+        run: diff fixtures/tristate.golden.vcd /tmp/tristate.vcd
+      - name: Run the undefined demo
+        run: cabal run gatework -- --netlist fixtures/unknown.net --duration 8 --output /tmp/unknown.vcd --set d=1 --at 4 d=0
+      - name: Compare the undefined demo with the golden file
+        run: diff fixtures/unknown.golden.vcd /tmp/unknown.vcd
       - name: Confirm a failed assertion stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/fail.vcd --set a=1,b=1 2>/tmp/fail.log; then

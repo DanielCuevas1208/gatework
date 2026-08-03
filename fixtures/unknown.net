@@ -1,0 +1,17 @@
+# Undefined state demo.
+# An uninitialized flip-flop shows x until the first clock edge.
+input d
+output q
+output nq
+wire nq
+clock clk period=2
+
+dff state clock=clk d=d q=q init=x
+gate NOT invert (q) -> nq
+
+assert q = x at 0
+assert nq = x at 0
+assert q = 1 at 3
+assert nq = 0 at 3
+assert q = 0 at 5
+assert nq = 1 at 5

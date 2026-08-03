@@ -4,37 +4,46 @@ $end
 $version
   gatework 0.6.0.0
 $end
+$comment
+  assert q = x at 0
+  assert nq = x at 0
+  assert q = 1 at 3
+  assert nq = 0 at 3
+  assert q = 0 at 5
+  assert nq = 1 at 5
+$end
 $timescale 1ns $end
 $scope module gatework $end
 $var wire 1 ! d $end
 $var wire 1 " q $end
-$var wire 1 # clk $end
+$var wire 1 # nq $end
+$var wire 1 $ clk $end
 $upscope $end
 $enddefinitions $end
 #0
 1!
-0"
+x"
 0#
+x#
+0$
 #1
 1"
-1#
+0#
+1$
 #2
-0!
-0#
+0$
 #3
-0"
-1#
+1$
 #4
-1!
-0#
-#5
-1"
-1#
-#6
 0!
-0#
-#7
+0$
+#5
 0"
 1#
+1$
+#6
+0$
+#7
+1$
 #8
-0#
+0$

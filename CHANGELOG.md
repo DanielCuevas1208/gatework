@@ -5,6 +5,20 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.6.0.0] - 2026-08-03
+
+### Added
+
+- Add two new logic values: unknown (x) and floating (z).
+- Add the TRIBUF tri-state buffer gate with a data and an enable input.
+- A disabled tri-state buffer floats its output to z.
+- A gate reads a floating input as unknown.
+- Undefined values propagate through combinational gates.
+- Accept x and z in input assignments, flip-flop init lists, and assertions.
+- VCD output uses x and z value characters.
+- Bundle golden waveforms for a tri-state demo and an undefined-state demo.
+- Add QuickCheck properties for the four-state model and the buffer truth table.
+
 ## [0.5.0.0] - 2026-08-03
 
 ### Added

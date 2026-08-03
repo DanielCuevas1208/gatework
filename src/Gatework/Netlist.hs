@@ -230,7 +230,7 @@ parseLine (lineNumber, line) = case words line of
   ["assert", signal, "=", value, "at", timeText] -> do
     signalName <- parseIdentifier lineNumber signal
     logic <- maybe
-      (Left (lineError lineNumber "assert value must be 0 or 1"))
+      (Left (lineError lineNumber "assert value must be 0, 1, x, or z"))
       Right
       (parseLogic value)
     time <- parseAssertTime lineNumber timeText
@@ -287,7 +287,7 @@ parseInitList lineNumber width fields = case lookup "init" fields of
   Nothing -> Right (replicate width Low)
   Just value -> case splitOn ',' value of
     [single] -> maybe
-      (Left (lineError lineNumber "init must be 0 or 1"))
+      (Left (lineError lineNumber "init must be 0, 1, x, or z"))
       (Right . replicate width)
       (parseLogic single)
     values -> do
@@ -296,7 +296,7 @@ parseInitList lineNumber width fields = case lookup "init" fields of
       mapM parseInitValue values
   where
     parseInitValue token = maybe
-      (Left (lineError lineNumber "init must be 0 or 1"))
+      (Left (lineError lineNumber "init must be 0, 1, x, or z"))
       Right
       (parseLogic token)
 
