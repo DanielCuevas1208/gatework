@@ -5,6 +5,7 @@ It parses a plain-text netlist, runs the circuit, and writes a VCD waveform file
 GTKWave and other waveform viewers can open the output.
 The simulator uses four logic values: low, high, unknown, and floating.
 Multi-bit buses use bracketed widths and slices.
+Reusable modules can live in separate library files.
 
 ## Value
 
@@ -20,6 +21,9 @@ You can do these tasks:
 - Use NAND, NOR, and XNOR gates alongside the basic gates.
 - Define reusable modules and instantiate them many times.
 - Build a hierarchical adder from half-adder and full-adder modules.
+- Store reusable modules in separate library files.
+- Load a module library with the `--library` option.
+- Build a hierarchical adder from a module library file.
 - Open the VCD output in GTKWave and inspect the waveforms.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
@@ -53,10 +57,15 @@ The project has four library modules.
 The data flow is:
 
 ```text
+library text -> parser -> library module table
 netlist text -> parser -> module table -> flattened netlist -> event queue -> waveform recorder -> assertion check -> VCD
 ```
 
 The parser validates names, gate arity, drivers, clocks, and references.
+The parser loads module definitions from library files.
+A library file holds only module definitions.
+The parser merges the main and library modules into one table.
+The parser rejects a module name that appears in more than one file.
 The parser expands each instance into the module gates.
 The parser expands each bus into single-bit signals before simulation.
 The flattened netlist uses dotted names for instance signals.
@@ -267,6 +276,19 @@ The netlist defines a half-adder module and a full-adder module.
 The full-adder module contains two half-adder instances.
 The top level joins four full-adder instances in a carry chain.
 The adder produces binary 1000 for three plus five.
+
+## Module library adder demo
+
+Run the same adder with its modules in a separate file.
+
+```powershell
+cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/adderlib.net --duration 0 --output libadder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
+```
+
+The file `fixtures/libadder.net` holds only the top level.
+The file `fixtures/adderlib.net` defines the half-adder and full-adder modules.
+The `--library` option loads the module definitions.
+The library adder produces the same waveform as the hierarchical adder.
 
 ## Hierarchical counter demo
 
@@ -494,6 +516,9 @@ The file `fixtures/gates.golden.vcd` holds the gate demo waveform.
 
 The file `fixtures/haddader.golden.vcd` holds the hierarchical adder waveform.
 Its identifiers include dotted instance names such as `f0.p`.
+
+The file `fixtures/libadder.golden.vcd` holds the module library adder waveform.
+Its content matches the hierarchical adder golden file.
 
 The file `fixtures/hcounter.golden.vcd` holds the hierarchical counter waveform.
 Its identifiers include dotted instance names such as `counter.d0`.
@@ -785,6 +810,32 @@ Modules may contain instances of other modules.
 A circular chain of instances is an error.
 An instance that names a missing module is an error.
 
+### Module libraries
+
+Store reusable module definitions in a separate file.
+A library file holds only module definitions.
+It cannot hold inputs, outputs, wires, gates, or instances.
+
+```text
+# halfadd.net
+module halfadd (a,b) -> (sum,carry)
+  gate XOR xsum (a,b) -> sum
+  gate AND carry (a,b) -> carry
+end
+```
+
+Load the library when you run the tool.
+
+```powershell
+cabal run gatework -- --netlist top.net --library halfadd.net
+```
+
+Repeat `--library` for more libraries.
+A library module can use modules from another library.
+A module name cannot appear in more than one file.
+The main netlist cannot reuse a module name from a library.
+An error names the library file that caused it.
+
 ## Verification
 
 The test suite has two parts.
@@ -793,11 +844,13 @@ Deterministic tests also cover NAND, NOR, and XNOR truth tables, module flatteni
 Deterministic tests also cover undefined and floating values, tri-state buffers, and their golden output.
 Deterministic tests also cover bus declarations, bitwise gates, bit references, slices, bus registers, bus assertions, bus module ports, and error cases.
 Deterministic tests also cover multi-driver resolution, scheduled driver changes, flip-flop output exclusivity, the shared-bus fixture, and its golden output.
+Deterministic tests also cover module library loading, cross-library module references, duplicate module names, and library file validation.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
 QuickCheck properties also compare a bus circuit with a bitwise reference model.
 QuickCheck properties also compare the shared bus with a per-time resolution model.
+QuickCheck properties also compare a library adder with its flat version.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -814,13 +867,15 @@ The bus XOR property compares a bus gate with per-bit evaluation.
 The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
 The shared-bus property compares each resolved wire value with a per-time model.
+The library adder property compares a library netlist with the flat adder.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, adder, tri-state, undefined-state, bus, and shared-bus VCD text.
+Golden tests compare the counter, register, reset, two-bit register, assertion, gate, hierarchical adder, library adder, hierarchical counter, adder, tri-state, undefined-state, bus, and shared-bus VCD text.
 CI runs every demo and compares its output with the golden file.
+CI confirms that a missing library file stops the run.
 
 ## Limitations
 
@@ -843,7 +898,11 @@ The event order decides the result.
 A wide flip-flop uses one shared reset signal.
 Assertions use the settled value at each time.
 An assertion time beyond the run duration is an error.
-A file defines its modules and its top level in one place.
+A netlist file can define modules inline or load them from library files.
+A library file holds only module definitions.
+A library file cannot hold top-level declarations.
+The main netlist cannot shadow a library module.
+Two library files cannot define the same module.
 Modules flatten before simulation, so the VCD stays flat.
 A bus expands into single-bit signals, so the VCD stays flat.
 A flip-flop bus output must have a `wire` or `output` declaration.
@@ -857,6 +916,7 @@ The dotted instance names are part of the VCD signal names.
 
 ## Roadmap
 
+Release 0.9.0.0 completed module libraries.
 Release 0.8.0.0 completed multi-driver wire resolution.
 Release 0.7.0.0 completed multi-bit buses, bit references, slices, and bus module ports.
 Release 0.6.0.0 completed undefined and floating logic values and tri-state buffers.
@@ -867,10 +927,9 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add module definitions in separate files.
-2. Add a waveform report command.
-3. Add whole-bus input values on the command line.
-4. Add multi-bit values in the VCD timeline.
+1. Add a waveform report command.
+2. Add whole-bus input values on the command line.
+3. Add multi-bit values in the VCD timeline.
 
 ## License
 

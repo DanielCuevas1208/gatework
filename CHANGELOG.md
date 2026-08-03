@@ -5,6 +5,26 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.9.0.0] - 2026-08-03
+
+### Added
+
+- Define reusable modules in separate library files.
+- Load module libraries with the --library command-line option.
+- Repeat --library to load more than one module library.
+- A library file may contain only module definitions.
+- A library module can use modules from another library.
+- Reject a module name that appears more than once across files.
+- Reject a main netlist that shadows a library module.
+- Reject top-level declarations inside a library file.
+- Prefix library parse errors with the file path.
+- Add a library adder demo fixture and a golden waveform.
+- Add deterministic tests and a QuickCheck property for library loading.
+
+### Fixed
+
+- Load library files with an explicit read error check.
+
 ## [0.8.0.0] - 2026-08-03
 
 ### Added

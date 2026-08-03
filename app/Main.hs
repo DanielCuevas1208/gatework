@@ -2,7 +2,7 @@ module Main (main) where
 
 import Data.List (intercalate)
 import Gatework.Logic (Logic, logicChar, parseLogic)
-import Gatework.Netlist (netlistSignals, parseNetlistFile)
+import Gatework.Netlist (netlistSignals, parseNetlistFileWithLibraries)
 import Gatework.Simulator
   ( AssertionFailure (..)
   , Simulation
@@ -23,10 +23,11 @@ data Options = Options
   , optionOutput :: FilePath
   , optionInputs :: [(String, Logic)]
   , optionScheduled :: [(Time, String, Logic)]
+  , optionLibraries :: [FilePath]
   }
 
 defaultOptions :: Options
-defaultOptions = Options Nothing 16 "gatework.vcd" [] []
+defaultOptions = Options Nothing 16 "gatework.vcd" [] [] []
 
 main :: IO ()
 main = do
@@ -40,7 +41,7 @@ run :: Options -> IO ()
 run options = case optionNetlist options of
   Nothing -> failWith "--netlist is required"
   Just path -> do
-    parsed <- parseNetlistFile path
+    parsed <- parseNetlistFileWithLibraries (optionLibraries options) path
     case parsed of
       Left message -> failWith message
       Right netlist ->
@@ -86,6 +87,8 @@ parseOptions arguments = parseMore defaultOptions arguments
         duration <- maybe (Left "--duration requires an integer") Right (readMaybe value)
         parseMore options {optionDuration = duration} rest
       "--output" : path : rest -> parseMore options {optionOutput = path} rest
+      "--library" : path : rest ->
+        parseMore options {optionLibraries = optionLibraries options ++ [path]} rest
       "--set" : assignments : rest -> do
         values <- parseAssignments assignments
         parseMore options {optionInputs = optionInputs options ++ values} rest
@@ -117,9 +120,11 @@ failWith message = do
 
 usage :: String
 usage = intercalate "\n"
-  [ "gatework --netlist FILE [--duration N] [--output FILE] [--set signal=0,signal=1,signal=x,signal=z] [--at TIME signal=0,signal=1,signal=x,signal=z]"
+  [ "gatework --netlist FILE [--library FILE] [--duration N] [--output FILE] [--set signal=0,signal=1,signal=x,signal=z] [--at TIME signal=0,signal=1,signal=x,signal=z]"
   , ""
   , "Simulate a netlist and write a VCD waveform."
+  , "Use --library to load reusable module definitions from another file."
+  , "Repeat --library to load more than one module file."
   , "Use --at to change input signals at a fixed time during the run."
   , "Use x for an unknown value and z for a floating value."
   , "Check assert declarations in the netlist against the waveform."
