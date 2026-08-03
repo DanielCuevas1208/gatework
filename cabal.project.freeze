@@ -1,0 +1,6 @@
+constraints: any.QuickCheck ==2.14.2,
+             QuickCheck -old-random +templatehaskell,
+             any.random ==1.2.1.3,
+             any.splitmix ==0.1.3.2,
+             splitmix -optimised-mixer
+index-state: hackage.haskell.org 2026-08-02T17:21:34Z

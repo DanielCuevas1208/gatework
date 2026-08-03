@@ -1,0 +1,61 @@
+# Four-bit ripple-carry adder.
+input a0
+input a1
+input a2
+input a3
+input b0
+input b1
+input b2
+input b3
+input cin
+
+output sum0
+output sum1
+output sum2
+output sum3
+output cout
+
+wire p0
+wire g0
+wire h0
+wire c1
+wire p1
+wire g1
+wire h1
+wire c2
+wire p2
+wire g2
+wire h2
+wire c3
+wire p3
+wire g3
+wire h3
+wire sum0
+wire sum1
+wire sum2
+wire sum3
+wire cout
+
+gate XOR propagate0 (a0,b0) -> p0
+gate XOR sumBit0 (p0,cin) -> sum0
+gate AND generate0 (a0,b0) -> g0
+gate AND halfCarry0 (p0,cin) -> h0
+gate OR carry0 (g0,h0) -> c1
+
+gate XOR propagate1 (a1,b1) -> p1
+gate XOR sumBit1 (p1,c1) -> sum1
+gate AND generate1 (a1,b1) -> g1
+gate AND halfCarry1 (p1,c1) -> h1
+gate OR carry1 (g1,h1) -> c2
+
+gate XOR propagate2 (a2,b2) -> p2
+gate XOR sumBit2 (p2,c2) -> sum2
+gate AND generate2 (a2,b2) -> g2
+gate AND halfCarry2 (p2,c2) -> h2
+gate OR carry2 (g2,h2) -> c3
+
+gate XOR propagate3 (a3,b3) -> p3
+gate XOR sumBit3 (p3,c3) -> sum3
+gate AND generate3 (a3,b3) -> g3
+gate AND halfCarry3 (p3,c3) -> h3
+gate OR carry3 (g3,h3) -> cout

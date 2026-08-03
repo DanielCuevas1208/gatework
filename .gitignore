@@ -1,0 +1,12 @@
+dist-newstyle/
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.vcd
+!fixtures/*.golden.vcd
+.haskell-tools/
+.stack-work/
+.idea/
+.vscode/
+.DS_Store

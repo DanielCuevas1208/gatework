@@ -1,0 +1,56 @@
+cabal-version:      3.0
+name:               gatework
+version:            0.1.0.0
+synopsis:           Event-driven digital logic simulation in Haskell
+description:
+  Gatework parses typed netlists, runs combinational gates and D
+  flip-flops with an event-driven scheduler, and writes standard VCD
+  waveform files. GTKWave and other waveform viewers can open the output.
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Gatework contributors
+maintainer:         Gatework contributors
+category:           Electronics
+build-type:         Simple
+extra-source-files:
+  fixtures/*.net
+  fixtures/*.golden.vcd
+extra-doc-files:
+  README.md
+  CHANGELOG.md
+tested-with:        GHC ==9.6.*
+
+common common-options
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wcompat -Wincomplete-uni-patterns -Wincomplete-record-updates
+
+library
+  import:            common-options
+  hs-source-dirs:    src
+  exposed-modules:
+      Gatework.Logic
+      Gatework.Netlist
+      Gatework.Simulator
+      Gatework.VCD
+  build-depends:
+      base >=4.14 && <5,
+      containers >=0.6 && <0.8
+
+executable gatework
+  import:            common-options
+  hs-source-dirs:    app
+  main-is:           Main.hs
+  build-depends:
+      base >=4.14 && <5,
+      gatework
+
+test-suite gatework-test
+  import:            common-options
+  type:              exitcode-stdio-1.0
+  hs-source-dirs:    test
+  main-is:           Spec.hs
+  build-depends:
+      base >=4.14 && <5,
+      containers >=0.6 && <0.8,
+      gatework,
+      QuickCheck >=2.14 && <3
