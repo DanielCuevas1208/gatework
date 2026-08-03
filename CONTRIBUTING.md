@@ -28,6 +28,8 @@ The CI workflow runs these checks.
 - `cabal test --enable-tests` runs the test suite.
 - Every demo writes a VCD file.
 - Each demo output must match its golden file.
+- The report demo writes a text table.
+- The report output must match its golden file.
 
 Run the checks before you open a pull request.
 

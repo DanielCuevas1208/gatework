@@ -5,6 +5,23 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.10.0.0] - 2026-08-03
+
+### Added
+
+- Add the report command to print the signal values as a text table.
+- Each row shows one change time and every signal value.
+- Print the report to standard output without the --output option.
+- Write the report to a file with the --output option.
+- Add a counter report golden file.
+- Add deterministic tests and a QuickCheck property for the report.
+- Extend the CI workflow to run the report demo.
+
+### Changed
+
+- Bump the package version to 0.10.0.0.
+- Update the golden VCD files to the new version string.
+
 ## [0.9.0.0] - 2026-08-03
 
 ### Added

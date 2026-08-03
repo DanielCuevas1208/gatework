@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.9.0.0
+version:            0.10.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
@@ -12,6 +12,7 @@ description:
   bracketed widths and slices. Modules and instances build reusable
   circuits. A module library file stores reusable module definitions.
   The command-line tool loads libraries with the --library option.
+  A waveform report command prints the signal values as a text table.
   GTKWave and other waveform viewers can open the output.
 homepage:           https://github.com/DanielCuevas1208/gatework
 bug-reports:        https://github.com/DanielCuevas1208/gatework/issues
@@ -24,6 +25,7 @@ build-type:         Simple
 extra-source-files:
   fixtures/*.net
   fixtures/*.golden.vcd
+  fixtures/*.golden.report
 extra-doc-files:
   README.md
   CHANGELOG.md
@@ -43,6 +45,7 @@ library
   exposed-modules:
       Gatework.Logic
       Gatework.Netlist
+      Gatework.Report
       Gatework.Simulator
       Gatework.VCD
   other-modules:
