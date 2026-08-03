@@ -11,12 +11,12 @@ $var wire 1 " q1 $end
 $var wire 1 # q2 $end
 $var wire 1 $ q3 $end
 $var wire 1 % clk $end
-$var wire 1 & d0 $end
-$var wire 1 ' d1 $end
-$var wire 1 ( carry2 $end
-$var wire 1 ) d2 $end
-$var wire 1 * carry3 $end
-$var wire 1 + d3 $end
+$var wire 1 & counter.d0 $end
+$var wire 1 ' counter.d1 $end
+$var wire 1 ( counter.carry2 $end
+$var wire 1 ) counter.d2 $end
+$var wire 1 * counter.carry3 $end
+$var wire 1 + counter.d3 $end
 $upscope $end
 $enddefinitions $end
 #0

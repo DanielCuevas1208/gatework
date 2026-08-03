@@ -15,6 +15,9 @@ You can do these tasks:
 - Simulate a register with a scheduled data stream.
 - Reset a flip-flop with an asynchronous reset pin.
 - Build a multi-bit register from one flip-flop declaration.
+- Use NAND, NOR, and XNOR gates alongside the basic gates.
+- Define reusable modules and instantiate them many times.
+- Build a hierarchical adder from half-adder and full-adder modules.
 - Open the VCD output in GTKWave and inspect the waveforms.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
@@ -28,17 +31,19 @@ The project has four library modules.
 | Module | Responsibility |
 | --- | --- |
 | `Gatework.Logic` | Defines logic values and gate functions |
-| `Gatework.Netlist` | Parses and validates circuit files |
+| `Gatework.Netlist` | Parses, validates, and flattens circuit files |
 | `Gatework.Simulator` | Schedules signal changes |
 | `Gatework.VCD` | Renders the waveform text |
 
 The data flow is:
 
 ```text
-netlist text -> parser -> typed model -> event queue -> waveform recorder -> assertion check -> VCD
+netlist text -> parser -> module table -> flattened netlist -> event queue -> waveform recorder -> assertion check -> VCD
 ```
 
 The parser validates names, gate arity, drivers, clocks, and references.
+The parser expands each instance into the module gates.
+The flattened netlist uses dotted names for instance signals.
 The scheduler processes only changed signals.
 A rising clock edge samples attached flip-flops together.
 An asserted reset forces flip-flop outputs to their initial values.
@@ -205,6 +210,60 @@ The register samples every bit on each rising clock edge.
 | 8 | 1 | 1 | 0 | 0 | 0 |
 | 9 | 1 | 1 | 0 | 1 | 1 |
 
+## Gate demo
+
+Run the universal gate truth demo.
+
+```powershell
+cabal run gatework -- --netlist fixtures/gates.net --duration 7 --output gates.vcd --set a=0,b=1 --at 2 a=1,b=1 --at 4 a=1,b=0 --at 6 a=0,b=0
+```
+
+The command writes this output:
+
+```text
+Wrote gates.vcd
+Signals: 5
+Duration: 7 time units
+Assertions: 12 passed
+```
+
+The run walks the complete truth table of NAND, NOR, and XNOR.
+Each assertion checks one row of one table.
+The run reports a pass only when every assertion holds.
+
+| Time | a | b | nand_out | nor_out | xnor_out |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 1 | 1 | 0 | 0 |
+| 2 | 1 | 1 | 0 | 0 | 1 |
+| 4 | 1 | 0 | 1 | 0 | 0 |
+| 6 | 0 | 0 | 1 | 1 | 1 |
+
+## Hierarchical adder demo
+
+Run the hierarchical ripple-carry adder.
+
+```powershell
+cabal run gatework -- --netlist fixtures/haddader.net --duration 0 --output haddader.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
+```
+
+The netlist defines a half-adder module and a full-adder module.
+The full-adder module contains two half-adder instances.
+The top level joins four full-adder instances in a carry chain.
+The adder produces binary 1000 for three plus five.
+
+## Hierarchical counter demo
+
+Run the hierarchical four-bit counter.
+
+```powershell
+cabal run gatework -- --netlist fixtures/hcounter.net --duration 8 --output hcounter.vcd
+```
+
+The netlist defines a one-bit flop module.
+The `counter4` module contains four flop instances.
+The counter advances on rising clock edges.
+Its value sequence is 0, 1, 2, 3, and 4.
+
 ## Assertion demo
 
 Run a netlist that checks its own waveform.
@@ -292,6 +351,17 @@ Here `!` is the data input `d`, `"` is the output `q`, and `#` is the clock `clk
 The files `fixtures/reset.golden.vcd` and `fixtures/reg2.golden.vcd` hold
 the reset and two-bit register waveforms.
 
+The file `fixtures/gates.golden.vcd` holds the gate demo waveform.
+
+The file `fixtures/haddader.golden.vcd` holds the hierarchical adder waveform.
+Its identifiers include dotted instance names such as `f0.p`.
+
+The file `fixtures/hcounter.golden.vcd` holds the hierarchical counter waveform.
+Its identifiers include dotted instance names such as `counter.d0`.
+
+The file `fixtures/adder.golden.vcd` holds the flat adder waveform.
+It shows the settled sum for three plus five.
+
 The file `fixtures/assert.golden.vcd` holds the assertion demo waveform.
 Its header carries the assertion text as a comment block:
 
@@ -321,7 +391,8 @@ gate AND combine (n,b) -> y
 dff state clock=clk d=a q=state_q init=0
 ```
 
-Supported gates are AND, OR, XOR, and NOT.
+Supported gates are AND, OR, XOR, NAND, NOR, XNOR, and NOT.
+NAND, NOR, and XNOR use two inputs.
 A gate output must have a `wire` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
@@ -356,11 +427,48 @@ The assertion compares the settled waveform value with the expectation.
 A mismatch makes the run report an error and fail.
 An assertion time beyond the run duration is an error.
 
+### Modules and instances
+
+A module is a reusable subcircuit.
+Define it once, then use it many times.
+
+```text
+module halfadd (a,b) -> (sum,carry)
+  gate XOR xsum (a,b) -> sum
+  gate AND xcarry (a,b) -> carry
+end
+
+input a
+input b
+wire s
+wire c
+instance halfadd u1 (a,b) -> (s,c)
+```
+
+The module signature lists input and output ports.
+The body declares wires, gates, flip-flops, assertions, and other instances.
+Do not use `input` or `output` inside a module.
+Do not put a module inside another module.
+Use `end` to close the module.
+
+An instance connects module ports to top-level signals.
+The port counts must match the module signature.
+The internal signals of an instance use dotted names.
+For example, the wire `p` of instance `f0` becomes `f0.p`.
+
+A flip-flop clock can be a module input port.
+Connect that port to a top-level clock signal.
+Modules may contain instances of other modules.
+A circular chain of instances is an error.
+An instance that names a missing module is an error.
+
 ## Verification
 
 The test suite has two parts.
 Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, reset behavior, register width, assertions, and golden VCD output.
+Deterministic tests also cover NAND, NOR, and XNOR truth tables, module flattening, nested instances, port validation, and circular instantiation.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
+QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -370,13 +478,14 @@ The reset property compares the waveform with a reference model of reset and clo
 The width property compares each register bit with a per-bit reference model.
 The entry-point property shows that both simulation entry points produce identical output.
 The assertion property shows that real values pass and inverted values fail.
+The hierarchy property shows that the hierarchical circuits match the flat circuits.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter, register, reset, two-bit register, and assertion VCD text.
-CI runs all six demos and compares their output with the golden files.
+Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, and adder VCD text.
+CI runs every demo and compares its output with the golden file.
 
 ## Limitations
 
@@ -392,16 +501,25 @@ The event order decides the result.
 A wide flip-flop uses one shared reset signal.
 Assertions use the settled value at each time.
 An assertion time beyond the run duration is an error.
+A file defines its modules and its top level in one place.
+Modules flatten before simulation, so the VCD stays flat.
+One module declaration cannot live inside another.
+An instance output must connect to a declared signal.
+The dotted instance names are part of the VCD signal names.
 
 ## Roadmap
 
+Release 0.5.0.0 completed universal gates and hierarchical netlists.
 Release 0.4.0.0 completed waveform assertions and VCD comment metadata.
 Release 0.3.0.0 completed reset pins and parameterized flip-flops.
 Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add more gates and hierarchical netlists.
+1. Add tri-state and undefined logic values.
+2. Add multi-bit vectors and bus syntax.
+3. Add module definitions in separate files.
+4. Add a waveform report command.
 
 ## License
 

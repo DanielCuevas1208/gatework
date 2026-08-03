@@ -18,6 +18,14 @@ jobs:
         with:
           ghc-version: '9.6.6'
           cabal-version: '3.10.3.0'
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: cabal-${{ runner.os }}-${{ hashFiles('cabal.project.freeze') }}
+          restore-keys: cabal-${{ runner.os }}-
       - name: Check package metadata
         run: cabal check
       - name: Build the package
@@ -40,10 +48,26 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/reg2.net --duration 10 --output /tmp/reg2.vcd --set d0=1,d1=0 --at 4 d0=0,d1=1 --at 6 rst=1 --at 8 rst=0,d0=1,d1=1
       - name: Compare the two-bit register demo with the golden file
         run: diff fixtures/reg2.golden.vcd /tmp/reg2.vcd
+      - name: Run the gate demo
+        run: cabal run gatework -- --netlist fixtures/gates.net --duration 7 --output /tmp/gates.vcd --set a=0,b=1 --at 2 a=1,b=1 --at 4 a=1,b=0 --at 6 a=0,b=0
+      - name: Compare the gate demo with the golden file
+        run: diff fixtures/gates.golden.vcd /tmp/gates.vcd
+      - name: Run the hierarchical adder demo
+        run: cabal run gatework -- --netlist fixtures/haddader.net --duration 0 --output /tmp/haddader.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
+      - name: Compare the hierarchical adder demo with the golden file
+        run: diff fixtures/haddader.golden.vcd /tmp/haddader.vcd
+      - name: Run the hierarchical counter demo
+        run: cabal run gatework -- --netlist fixtures/hcounter.net --duration 8 --output /tmp/hcounter.vcd
+      - name: Compare the hierarchical counter demo with the golden file
+        run: diff fixtures/hcounter.golden.vcd /tmp/hcounter.vcd
       - name: Run the assertion demo
         run: cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/assert.vcd --set a=0,b=1 --at 3 a=1 --at 5 a=0
       - name: Compare the assertion demo with the golden file
         run: diff fixtures/assert.golden.vcd /tmp/assert.vcd
+      - name: Run the adder demo
+        run: cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output /tmp/adder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
+      - name: Compare the adder demo with the golden file
+        run: diff fixtures/adder.golden.vcd /tmp/adder.vcd
       - name: Confirm a failed assertion stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/fail.vcd --set a=1,b=1 2>/tmp/fail.log; then
@@ -51,5 +75,3 @@ jobs:
             exit 1
           fi
           grep -q "assertion failed: y must be 1 at time 0" /tmp/fail.log
-      - name: Run the adder demo
-        run: cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output /tmp/adder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0

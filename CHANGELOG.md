@@ -5,6 +5,21 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.5.0.0] - 2026-08-03
+
+### Added
+
+- Add NAND, NOR, and XNOR gates.
+- Add reusable modules with the module declaration.
+- Add module instances with the instance declaration.
+- Modules flatten into the top-level netlist before simulation.
+- Use dotted names for the internal signals of an instance.
+- Support flip-flops whose clock is a module input port.
+- Support assertions and nested instances inside modules.
+- Reject unknown modules, port-count mismatches, and circular instances.
+- Bundle golden waveforms for a gate demo, a hierarchical adder, and a hierarchical counter.
+- Add QuickCheck properties for the new gates and for hierarchy behavior.
+
 ## [0.4.0.0] - 2026-08-03
 
 ### Added

@@ -3,6 +3,8 @@ module Gatework.Netlist
   , Clock (..)
   , DFlipFlop (..)
   , Gate (..)
+  , Instance (..)
+  , Module (..)
   , Netlist (..)
   , Time
   , netlistSignals
@@ -13,6 +15,8 @@ module Gatework.Netlist
 import Control.Monad (unless)
 import Data.Char (isAlphaNum, isSpace, toUpper)
 import Data.List (foldl', nub)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Gatework.Logic
 
 type Time = Integer
@@ -48,6 +52,22 @@ data Gate = Gate
   }
   deriving (Eq, Show)
 
+data Module = Module
+  { moduleName :: String
+  , moduleInputs :: [String]
+  , moduleOutputs :: [String]
+  , moduleBody :: [Declaration]
+  }
+  deriving (Eq, Show)
+
+data Instance = Instance
+  { instanceName :: String
+  , instanceModule :: String
+  , instanceInputs :: [String]
+  , instanceOutputs :: [String]
+  }
+  deriving (Eq, Show)
+
 data Netlist = Netlist
   { netlistInputs :: [String]
   , netlistOutputs :: [String]
@@ -67,6 +87,13 @@ data Declaration
   | GateDeclaration Gate
   | FlipFlopDeclaration DFlipFlop
   | AssertionDeclaration Assertion
+  | InstanceDeclaration Instance
+  deriving (Eq, Show)
+
+data ParsedNetlist = ParsedNetlist
+  { parsedModules :: Map String Module
+  , parsedDeclarations :: [Declaration]
+  }
 
 emptyNetlist :: Netlist
 emptyNetlist = Netlist [] [] [] [] [] [] []
@@ -76,15 +103,19 @@ parseNetlistFile path = parseNetlist <$> readFile path
 
 parseNetlist :: String -> Either String Netlist
 parseNetlist source = do
-  declarations <- mapM parseLine usefulLines
-  validateNetlist (foldl' addDeclaration emptyNetlist declarations)
-  where
-    usefulLines =
-      [ (lineNumber, cleaned)
-      | (lineNumber, raw) <- zip [1 :: Int ..] (lines source)
-      , let cleaned = trim (takeWhile (/= '#') raw)
-      , not (null cleaned)
-      ]
+  parsed <- parseStatements (usefulLines source)
+  validateModules (parsedModules parsed)
+  netlist <- flattenParsed parsed
+  _ <- validateNetlist netlist
+  pure netlist
+
+usefulLines :: String -> [(Int, String)]
+usefulLines source =
+  [ (lineNumber, cleaned)
+  | (lineNumber, raw) <- zip [1 :: Int ..] (lines source)
+  , let cleaned = trim (takeWhile (/= '#') raw)
+  , not (null cleaned)
+  ]
 
 addDeclaration :: Netlist -> Declaration -> Netlist
 addDeclaration netlist declaration = case declaration of
@@ -97,6 +128,65 @@ addDeclaration netlist declaration = case declaration of
     netlist {netlistFlipFlops = netlistFlipFlops netlist ++ [flipFlop]}
   AssertionDeclaration assertion ->
     netlist {netlistAssertions = netlistAssertions netlist ++ [assertion]}
+  InstanceDeclaration _ -> netlist
+
+parseStatements :: [(Int, String)] -> Either String ParsedNetlist
+parseStatements statementLines = go statementLines Map.empty []
+  where
+    go remaining modules declarations = case remaining of
+      [] -> Right (ParsedNetlist modules (reverse declarations))
+      (lineNumber, line) : rest -> case words line of
+        "module" : _ -> do
+          (moduleDef, remainder) <- parseModuleBlock lineNumber line rest
+          if Map.member (moduleName moduleDef) modules
+            then Left ("duplicate module: " ++ moduleName moduleDef)
+            else go remainder (Map.insert (moduleName moduleDef) moduleDef modules) declarations
+        _ -> do
+          declaration <- parseLine (lineNumber, line)
+          go rest modules (declaration : declarations)
+
+parseModuleBlock :: Int -> String -> [(Int, String)] -> Either String (Module, [(Int, String)])
+parseModuleBlock lineNumber line rest = do
+  (name, inputs, outputs) <- case words line of
+    ["module", moduleName', ports, "->", outputPorts] ->
+      parseModuleSignature lineNumber moduleName' ports outputPorts
+    _ -> Left (lineError lineNumber "expected module NAME (inputs) -> (outputs)")
+  let (bodyLines, remainder) = break isModuleEnd rest
+  case remainder of
+    [] -> Left (lineError lineNumber ("unterminated module: " ++ name))
+    (_ : afterEnd) -> do
+      unless (not (null bodyLines)) $
+        Left (lineError lineNumber ("module has an empty body: " ++ name))
+      declarations <- mapM parseModuleLine bodyLines
+      pure (Module name inputs outputs declarations, afterEnd)
+  where
+    isModuleEnd (_, lineContent) = words lineContent == ["end"]
+
+parseModuleLine :: (Int, String) -> Either String Declaration
+parseModuleLine (lineNumber, line) = case words line of
+  ("input" : _) -> Left (lineError lineNumber "input declarations are not allowed inside a module")
+  ("output" : _) -> Left (lineError lineNumber "output declarations are not allowed inside a module")
+  ("module" : _) -> Left (lineError lineNumber "nested modules are not allowed")
+  ("end" : _) -> Left (lineError lineNumber "unexpected end outside a module block")
+  _ -> parseLine (lineNumber, line)
+
+parseModuleSignature :: Int -> String -> String -> String -> Either String (String, [String], [String])
+parseModuleSignature lineNumber name inputPorts outputPorts = do
+  moduleName' <- parseIdentifier lineNumber name
+  inputNames <- parsePorts lineNumber inputPorts
+  outputNames <- parsePorts lineNumber outputPorts
+  unless (not (null inputNames)) $
+    Left (lineError lineNumber "module requires at least one input port")
+  unless (not (null outputNames)) $
+    Left (lineError lineNumber "module requires at least one output port")
+  unless (null (duplicates inputNames)) $
+    Left (lineError lineNumber "module input ports cannot repeat")
+  unless (null (duplicates outputNames)) $
+    Left (lineError lineNumber "module output ports cannot repeat")
+  let overlap = [port | port <- inputNames, port `elem` outputNames]
+  unless (null overlap) $
+    Left (lineError lineNumber "module ports cannot be both input and output")
+  pure (moduleName', inputNames, outputNames)
 
 parseLine :: (Int, String) -> Either String Declaration
 parseLine (lineNumber, line) = case words line of
@@ -145,17 +235,27 @@ parseLine (lineNumber, line) = case words line of
       (parseLogic value)
     time <- parseAssertTime lineNumber timeText
     pure (AssertionDeclaration (Assertion signalName logic time))
-  _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, dff, or assert declaration")
+  ["instance", moduleText, name, ports, "->", outputs] -> do
+    moduleName' <- parseIdentifier lineNumber moduleText
+    instanceName' <- parseIdentifier lineNumber name
+    inputNames <- parsePorts lineNumber ports
+    outputNames <- parsePorts lineNumber outputs
+    unless (not (null inputNames)) $
+      Left (lineError lineNumber "instance requires at least one input")
+    unless (not (null outputNames)) $
+      Left (lineError lineNumber "instance requires at least one output")
+    pure (InstanceDeclaration (Instance instanceName' moduleName' inputNames outputNames))
+  _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, dff, assert, or instance declaration")
 
 parsePorts :: Int -> String -> Either String [String]
 parsePorts lineNumber token
   | length token < 2 || head token /= '(' || last token /= ')' =
-      Left (lineError lineNumber "gate inputs must use parentheses")
+      Left (lineError lineNumber "port lists must use parentheses")
   | otherwise = do
       let body = init (tail token)
           names = splitOn ',' body
       unless (not (null body) && all (not . null) names) $
-        Left (lineError lineNumber "gate inputs cannot be empty")
+        Left (lineError lineNumber "port lists cannot be empty")
       mapM (parseIdentifier lineNumber) names
 
 parseField :: Int -> String -> Either String (String, String)
@@ -247,15 +347,15 @@ validateNetlist netlist = do
   checkDuplicates "component" componentNames
   checkDuplicates "driven signal" driven
   mapM_ (checkKnown declared "output") (netlistOutputs netlist)
-  mapM_ (checkGate declared (netlistWires netlist)) (netlistGates netlist)
+  mapM_ (checkGate declared (netlistWires netlist) (netlistOutputs netlist)) (netlistGates netlist)
   mapM_ (checkFlipFlop declared clockNames) (netlistFlipFlops netlist)
   mapM_ (checkAssertion (netlistSignals netlist)) (netlistAssertions netlist)
   pure netlist
 
-checkGate :: [String] -> [String] -> Gate -> Either String ()
-checkGate declared wires gate = do
-  unless (gateOutput gate `elem` wires) $
-    Left ("gate output must be declared as a wire: " ++ gateOutput gate)
+checkGate :: [String] -> [String] -> [String] -> Gate -> Either String ()
+checkGate declared wires outputs gate = do
+  unless (gateOutput gate `elem` wires || gateOutput gate `elem` outputs) $
+    Left ("gate output must be declared as a wire or output: " ++ gateOutput gate)
   mapM_ (checkKnown declared "gate input") (gateInputs gate)
 
 checkFlipFlop :: [String] -> [String] -> DFlipFlop -> Either String ()
@@ -282,6 +382,127 @@ duplicates :: Eq a => [a] -> [a]
 duplicates values = nub [value | value <- values, count value values > 1]
   where
     count value = length . filter (== value)
+
+validateModules :: Map String Module -> Either String ()
+validateModules modules = mapM_ validateModule (Map.elems modules)
+
+validateModule :: Module -> Either String ()
+validateModule moduleDef = do
+  let ports = moduleInputs moduleDef ++ moduleOutputs moduleDef
+      wires = [signal | WireDeclaration signal <- moduleBody moduleDef]
+      clocks = [clock | ClockDeclaration clock <- moduleBody moduleDef]
+      clockSignals = map clockSignal clocks
+      dffOutputs = concat [dffOutput flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+      declared = nub (ports ++ wires ++ clockSignals ++ dffOutputs)
+      driven = [gateOutput gate | GateDeclaration gate <- moduleBody moduleDef] ++ dffOutputs
+      componentNames =
+        [gateName gate | GateDeclaration gate <- moduleBody moduleDef]
+          ++ [dffName flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+          ++ [instanceName instanceDef | InstanceDeclaration instanceDef <- moduleBody moduleDef]
+  checkDuplicates "signal" declared
+  checkDuplicates "component" componentNames
+  checkDuplicates "driven signal" driven
+  mapM_ (checkModuleGate moduleDef declared) (moduleGates moduleDef)
+  mapM_ (checkModuleFlipFlop moduleDef declared clockSignals) (moduleFlipFlops moduleDef)
+  mapM_ (checkAssertion declared) (moduleAssertions moduleDef)
+
+moduleGates :: Module -> [Gate]
+moduleGates moduleDef = [gate | GateDeclaration gate <- moduleBody moduleDef]
+
+moduleFlipFlops :: Module -> [DFlipFlop]
+moduleFlipFlops moduleDef = [flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+
+moduleAssertions :: Module -> [Assertion]
+moduleAssertions moduleDef = [assertion | AssertionDeclaration assertion <- moduleBody moduleDef]
+
+checkModuleGate :: Module -> [String] -> Gate -> Either String ()
+checkModuleGate moduleDef declared gate = do
+  unless (gateOutput gate `elem` moduleWires moduleDef || gateOutput gate `elem` moduleOutputs moduleDef) $
+    Left ("gate output must be declared as a wire or module output: " ++ gateOutput gate)
+  mapM_ (checkKnown declared "gate input") (gateInputs gate)
+  where
+    moduleWires current = [signal | WireDeclaration signal <- moduleBody current]
+
+checkModuleFlipFlop :: Module -> [String] -> [String] -> DFlipFlop -> Either String ()
+checkModuleFlipFlop moduleDef declared clockSignals flipFlop = do
+  unless (dffClock flipFlop `elem` clockSignals || dffClock flipFlop `elem` moduleInputs moduleDef) $
+    Left ("dff clock must be a module clock or input port: " ++ dffClock flipFlop)
+  mapM_ (checkKnown declared "dff data input") (dffData flipFlop)
+  mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
+
+flattenParsed :: ParsedNetlist -> Either String Netlist
+flattenParsed parsed = do
+  expanded <- concat <$> mapM (expandTop parsed) (parsedDeclarations parsed)
+  pure (foldl' addDeclaration emptyNetlist expanded)
+
+expandTop :: ParsedNetlist -> Declaration -> Either String [Declaration]
+expandTop parsed declaration = case declaration of
+  InstanceDeclaration instanceDef ->
+    expandInstance parsed id (instanceName instanceDef) [] instanceDef
+  other -> pure [other]
+
+expandInstance :: ParsedNetlist -> (String -> String) -> String -> [String] -> Instance
+  -> Either String [Declaration]
+expandInstance parsed callerRename instancePath stack instanceDef = do
+  moduleDef <- maybe
+    (Left ("instance references an unknown module: " ++ instanceModule instanceDef))
+    Right
+    (Map.lookup (instanceModule instanceDef) (parsedModules parsed))
+  let moduleRef = moduleName moduleDef
+  if moduleRef `elem` stack
+    then Left ("circular module instantiation: " ++ moduleRef)
+    else do
+      let connectionInputs = instanceInputs instanceDef
+          connectionOutputs = instanceOutputs instanceDef
+      unless (length connectionInputs == length (moduleInputs moduleDef)) $
+        Left ( "instance " ++ instancePath ++ " expects "
+            ++ show (length (moduleInputs moduleDef))
+            ++ " inputs, but got "
+            ++ show (length connectionInputs)
+            )
+      unless (length connectionOutputs == length (moduleOutputs moduleDef)) $
+        Left ( "instance " ++ instancePath ++ " expects "
+            ++ show (length (moduleOutputs moduleDef))
+            ++ " outputs, but got "
+            ++ show (length connectionOutputs)
+            )
+      let portMap = Map.fromList
+            ( zip (moduleInputs moduleDef) connectionInputs
+                ++ zip (moduleOutputs moduleDef) connectionOutputs
+            )
+          rename signal = case Map.lookup signal portMap of
+            Just external -> callerRename external
+            Nothing -> callerRename (instancePath ++ "." ++ signal)
+          instancePrefix = instancePath ++ "."
+      concat <$> mapM (expandDeclaration parsed rename instancePrefix (moduleRef : stack)) (moduleBody moduleDef)
+
+expandDeclaration :: ParsedNetlist -> (String -> String) -> String -> [String] -> Declaration
+  -> Either String [Declaration]
+expandDeclaration parsed rename instancePrefix stack declaration = case declaration of
+  WireDeclaration signal -> pure [WireDeclaration (rename signal)]
+  ClockDeclaration clock -> pure [ClockDeclaration clock {clockSignal = rename (clockSignal clock)}]
+  GateDeclaration gate -> pure
+    [ GateDeclaration gate
+      { gateName = instancePrefix ++ gateName gate
+      , gateInputs = map rename (gateInputs gate)
+      , gateOutput = rename (gateOutput gate)
+      }
+    ]
+  FlipFlopDeclaration flipFlop -> pure
+    [ FlipFlopDeclaration flipFlop
+      { dffName = instancePrefix ++ dffName flipFlop
+      , dffClock = rename (dffClock flipFlop)
+      , dffData = map rename (dffData flipFlop)
+      , dffOutput = map rename (dffOutput flipFlop)
+      , dffReset = fmap rename (dffReset flipFlop)
+      }
+    ]
+  AssertionDeclaration assertion -> pure
+    [ AssertionDeclaration assertion {assertionSignal = rename (assertionSignal assertion)}
+    ]
+  InstanceDeclaration nested ->
+    expandInstance parsed rename (instancePrefix ++ instanceName nested) stack nested
+  _ -> Left "unexpected declaration in a module body"
 
 netlistSignals :: Netlist -> [String]
 netlistSignals netlist = nub
