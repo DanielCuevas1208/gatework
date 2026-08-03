@@ -2,6 +2,7 @@ module Main (main) where
 
 import Control.Monad (forM)
 import Data.Either (isLeft)
+import Data.List (sortOn)
 import Gatework.Logic (GateType (..), Logic (..), evalGate)
 import Gatework.Netlist (Netlist (..), parseNetlist)
 import Gatework.Simulator (Simulation, Time, signalChanges, simulate, simulateWithInputs, simulateWithScheduledInputs)
@@ -57,6 +58,18 @@ main = do
       putStrLn ("register fixture failed to parse: " ++ message)
       exitFailure
     Right netlist -> pure netlist
+  resetSource <- readFile "fixtures/reset.net"
+  reset <- case parseNetlist resetSource of
+    Left message -> do
+      putStrLn ("reset fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
+  reg2Source <- readFile "fixtures/reg2.net"
+  reg2 <- case parseNetlist reg2Source of
+    Left message -> do
+      putStrLn ("reg2 fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
   deterministic <- sequence
     [ testParser
     , testParserAcceptsCommentsAndBlankLines
@@ -70,10 +83,18 @@ main = do
     , testParserRejectsInvalidClockPeriod
     , testParserRejectsInvalidIdentifier
     , testParserRejectsInvalidFlipFlop
+    , testParserRejectsWidthMismatch
+    , testParserRejectsUndeclaredReset
+    , testParserRejectsBadInitList
     , testClockToggles
     , testDffSamplesOnRisingEdge
     , testDffRequiresDeclaredClock
     , testDffInitRespected
+    , testDffResetAssertForcesInit
+    , testDffResetOverridesClock
+    , testDffResetDeassertHolds
+    , testDffInitListRespected
+    , testRegisterWidthSamplesAllBits
     , testEventLimitOnCombinationalLoop
     , testNegativeDurationRejected
     , testInputOverrideValidation
@@ -86,6 +107,8 @@ main = do
     , testVCDHeader
     , testGoldenVCD
     , testGoldenRegisterVCD
+    , testGoldenResetVCD
+    , testGoldenRegister2VCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -109,6 +132,8 @@ main = do
     , ("XNOR cancels a shared input", quickCheckResult propXnorIdentity)
     , ("ripple-carry adder adds four-bit values", quickCheckResult (propRippleCarryAdder adder))
     , ("scheduled inputs match a reference model", quickCheckResult (propScheduledInputSampling register))
+    , ("reset matches a reference model", quickCheckResult (propResetSampling reset))
+    , ("register width matches a per-bit reference", quickCheckResult (propRegisterWidthSampling reg2))
     , ("scheduled entry point matches the direct entry point", quickCheckResult (propEquivalentEntryPoints counter))
     ]
     $ \(label, action) -> do
@@ -194,6 +219,24 @@ testParserRejectsInvalidFlipFlop =
       && isLeft (parseNetlist "input d\nclock clk period=2\ndff f clock=clk d=d q=q init=2")
       && isLeft (parseNetlist "input d\nclock clk period=2\ndff f clock=clk d=d q=q extra=0")
 
+testParserRejectsWidthMismatch :: IO Bool
+testParserRejectsWidthMismatch =
+  check "parser rejects flip-flop width mismatches" $
+    isLeft (parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0 q=q0,q1 init=0,0")
+      && isLeft (parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 width=3")
+      && isLeft (parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 width=0")
+
+testParserRejectsUndeclaredReset :: IO Bool
+testParserRejectsUndeclaredReset =
+  check "parser rejects an undeclared flip-flop reset" $ isLeft $
+    parseNetlist "input d\noutput q\nclock clk period=2\ndff f clock=clk d=d q=q init=0 rst=missing"
+
+testParserRejectsBadInitList :: IO Bool
+testParserRejectsBadInitList =
+  check "parser rejects invalid flip-flop init lists" $
+    isLeft (parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0,d1 q=q0,q1 init=0,0,0")
+      && isLeft (parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0,d1 q=q0,q1 init=2")
+
 testClockToggles :: IO Bool
 testClockToggles = case parseNetlist "clock clk period=4" of
   Left _ -> check "clock toggles at half-period intervals" False
@@ -228,6 +271,61 @@ testDffInitRespected =
     Right parsed -> check "dff initial value is honored" $ case
       simulateWithInputs parsed [("d", Low)] 3 of
         Right simulation -> signalChanges simulation "q" == [(0, High)]
+        Left _ -> False
+
+testDffResetAssertForcesInit :: IO Bool
+testDffResetAssertForcesInit =
+  let netlist = parseNetlist "input d\ninput rst\noutput q\nclock clk period=2\ndff f clock=clk d=d q=q init=0 rst=rst"
+  in case netlist of
+    Left _ -> check "reset forces the dff to its initial value" False
+    Right parsed -> check "reset forces the dff to its initial value" $ case
+      simulateWithScheduledInputs parsed [("d", High)] [(3, "rst", High)] 4 of
+        Right simulation -> signalChanges simulation "q" == [(0, Low), (1, High), (3, Low)]
+        Left _ -> False
+
+testDffResetOverridesClock :: IO Bool
+testDffResetOverridesClock =
+  let netlist = parseNetlist "input d\ninput rst\noutput q\nclock clk period=2\ndff f clock=clk d=d q=q init=0 rst=rst"
+  in case netlist of
+    Left _ -> check "an asserted reset overrides clock sampling" False
+    Right parsed -> check "an asserted reset overrides clock sampling" $ case
+      simulateWithInputs parsed [("d", High), ("rst", High)] 5 of
+        Right simulation -> signalChanges simulation "q" == [(0, Low)]
+        Left _ -> False
+
+testDffResetDeassertHolds :: IO Bool
+testDffResetDeassertHolds =
+  let netlist = parseNetlist "input d\ninput rst\noutput q\nclock clk period=2\ndff f clock=clk d=d q=q init=0 rst=rst"
+  in case netlist of
+    Left _ -> check "reset deassertion holds the dff output" False
+    Right parsed -> check "reset deassertion holds the dff output" $ case
+      simulateWithScheduledInputs parsed [("d", High)] [(2, "rst", High), (4, "rst", Low)] 5 of
+        Right simulation ->
+          signalChanges simulation "q" == [(0, Low), (1, High), (2, Low), (5, High)]
+        Left _ -> False
+
+testDffInitListRespected :: IO Bool
+testDffInitListRespected =
+  let netlist = parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0,d1 q=q0,q1 init=1,0"
+  in case netlist of
+    Left _ -> check "dff init list sets each bit" False
+    Right parsed -> check "dff init list sets each bit" $ case
+      simulate parsed 3 of
+        Right simulation ->
+          signalChanges simulation "q0" == [(0, High), (1, Low)]
+            && signalChanges simulation "q1" == [(0, Low)]
+        Left _ -> False
+
+testRegisterWidthSamplesAllBits :: IO Bool
+testRegisterWidthSamplesAllBits =
+  let netlist = parseNetlist "input d0\ninput d1\noutput q0\noutput q1\nclock clk period=2\ndff pair clock=clk d=d0,d1 q=q0,q1 init=0,0"
+  in case netlist of
+    Left _ -> check "a width register samples every bit" False
+    Right parsed -> check "a width register samples every bit" $ case
+      simulateWithInputs parsed [("d0", High), ("d1", High)] 3 of
+        Right simulation ->
+          signalChanges simulation "q0" == [(0, Low), (1, High)]
+            && signalChanges simulation "q1" == [(0, Low), (1, High)]
         Left _ -> False
 
 testEventLimitOnCombinationalLoop :: IO Bool
@@ -389,6 +487,33 @@ testGoldenRegisterVCD = do
         pure (renderVCD simulation)
   check "register VCD matches golden file" (actual == Right golden)
 
+testGoldenResetVCD :: IO Bool
+testGoldenResetVCD = do
+  source <- readFile "fixtures/reset.net"
+  golden <- readFile "fixtures/reset.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("d", High)]
+            [(2, "rst", High), (4, "rst", Low), (6, "d", Low)] 8
+        pure (renderVCD simulation)
+  check "reset VCD matches golden file" (actual == Right golden)
+
+testGoldenRegister2VCD :: IO Bool
+testGoldenRegister2VCD = do
+  source <- readFile "fixtures/reg2.net"
+  golden <- readFile "fixtures/reg2.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("d0", High), ("d1", Low)]
+            [ (4, "d0", Low), (4, "d1", High)
+            , (6, "rst", High)
+            , (8, "rst", Low), (8, "d0", High), (8, "d1", High)
+            ] 10
+        pure (renderVCD simulation)
+  check "register width VCD matches golden file" (actual == Right golden)
+
 propAndCommutative :: Logical -> Logical -> Bool
 propAndCommutative (Logical left) (Logical right) =
   and2 left right == and2 right left
@@ -486,6 +611,82 @@ propScheduledInputSampling netlist =
           expected = boolToLogic reference
       in valueAt simulation "d" (edge - 1) == expected
           && valueAt simulation "q" edge == expected
+
+data RefEvent
+  = RefData Logic
+  | RefReset Logic
+  | RefEdge
+
+referenceChanges :: [(Time, RefEvent)] -> [(Time, Logic)]
+referenceChanges events = reverse changesRev
+  where
+    (changesRev, _, _, _) = foldl step ([(0, Low)], Low, Low, Low) events
+    step (acc, d, r, q) (time, event) = case event of
+      RefData value -> (acc, value, r, q)
+      RefReset value ->
+        let nextQ = if value == High then Low else q
+        in (record time nextQ q acc, d, value, nextQ)
+      RefEdge ->
+        let nextQ = if r == High then Low else d
+        in (record time nextQ q acc, d, r, nextQ)
+    record time nextQ oldQ acc
+      | nextQ == oldQ = acc
+      | otherwise = (time, nextQ) : acc
+
+propResetSampling :: Netlist -> Property
+propResetSampling netlist =
+  forAll (choose (1, 6)) $ \count ->
+    forAll (vector count) $ \dataValues ->
+      forAll (vector count) $ \resetValues ->
+        let transitions =
+              [ (2 * fromIntegral k, "d", boolToLogic value)
+              | (k, value) <- zip [1 :: Int .. count] dataValues
+              ]
+              ++ [ (2 * fromIntegral k, "rst", boolToLogic value)
+                 | (k, value) <- zip [1 :: Int .. count] resetValues
+                 ]
+            duration = 2 * fromIntegral count + 1
+            events = sortOn fst $ concat
+              [ [ (2 * fromIntegral k + 1, RefEdge) | k <- [0 :: Int .. count] ]
+              , [ (2 * fromIntegral k, RefData (boolToLogic value))
+                | (k, value) <- zip [1 :: Int .. count] dataValues
+                ]
+              , [ (2 * fromIntegral k, RefReset (boolToLogic value))
+                | (k, value) <- zip [1 :: Int .. count] resetValues
+                ]
+              ]
+        in case simulateWithScheduledInputs netlist [] transitions duration of
+          Left _ -> property False
+          Right simulation -> property (signalChanges simulation "q" == referenceChanges events)
+
+propRegisterWidthSampling :: Netlist -> Property
+propRegisterWidthSampling netlist =
+  forAll (choose (1, 5)) $ \count ->
+    forAll (vector (2 * count)) $ \bits ->
+      let data0 = take count bits
+          data1 = drop count bits
+          transitions =
+            [ (2 * fromIntegral k, "d0", boolToLogic value)
+            | (k, value) <- zip [1 :: Int .. count] data0
+            ]
+            ++ [ (2 * fromIntegral k, "d1", boolToLogic value)
+               | (k, value) <- zip [1 :: Int .. count] data1
+               ]
+          duration = 2 * fromIntegral count + 1
+      in case simulateWithScheduledInputs netlist [] transitions duration of
+        Left _ -> property False
+        Right simulation ->
+          property
+            ( signalChanges simulation "q0" == bitReference data0
+                && signalChanges simulation "q1" == bitReference data1
+            )
+  where
+    bitReference values =
+      reverse (snd (foldl step (Low, [(0, Low)]) (zip [1 :: Int ..] values)))
+    step (oldQ, acc) (k, value) =
+      let edgeTime = 2 * fromIntegral k + 1
+          nextQ = boolToLogic value
+      in (nextQ, if nextQ == oldQ then acc else (edgeTime, nextQ) : acc)
 
 propEquivalentEntryPoints :: Netlist -> Property
 propEquivalentEntryPoints netlist =

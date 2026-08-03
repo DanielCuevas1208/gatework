@@ -1,0 +1,8 @@
+# Two-bit register with reset and scheduled data.
+input d0
+input d1
+input rst
+output q0
+output q1
+clock clk period=2
+dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 rst=rst

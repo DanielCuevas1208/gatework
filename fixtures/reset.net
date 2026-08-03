@@ -1,0 +1,6 @@
+# Single D flip-flop with an asynchronous active-high reset.
+input d
+input rst
+output q
+clock clk period=2
+dff reg clock=clk d=d q=q init=0 rst=rst

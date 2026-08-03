@@ -13,6 +13,8 @@ You can do these tasks:
 - Simulate a ripple-carry adder from a netlist file.
 - Simulate a four-bit counter from a netlist file.
 - Simulate a register with a scheduled data stream.
+- Reset a flip-flop with an asynchronous reset pin.
+- Build a multi-bit register from one flip-flop declaration.
 - Open the VCD output in GTKWave and inspect the waveforms.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
@@ -37,6 +39,7 @@ netlist text -> parser -> typed model -> event queue -> waveform recorder -> VCD
 The parser validates names, gate arity, drivers, clocks, and references.
 The scheduler processes only changed signals.
 A rising clock edge samples attached flip-flops together.
+An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
 The VCD writer uses stable signal order and stable identifiers.
 
@@ -155,6 +158,50 @@ The flip-flop samples the data input on each rising clock edge.
 | 6 | 0 | 1 |
 | 7 | 0 | 0 |
 
+## Reset demo
+
+Run a D flip-flop with an asynchronous reset.
+
+```powershell
+cabal run gatework -- --netlist fixtures/reset.net --duration 8 --output reset.vcd --set d=1 --at 2 rst=1 --at 4 rst=0 --at 6 d=0
+```
+
+The reset input `rst` is active high.
+It forces the flip-flop back to its initial value without waiting for a clock edge.
+The clock does not sample data while reset is high.
+
+| Time | d | rst | q |
+| --- | --- | --- | --- |
+| 0 | 1 | 0 | 0 |
+| 1 | 1 | 0 | 1 |
+| 2 | 1 | 1 | 0 |
+| 3 | 1 | 1 | 0 |
+| 4 | 1 | 0 | 0 |
+| 5 | 1 | 0 | 1 |
+| 6 | 0 | 0 | 1 |
+| 7 | 0 | 0 | 0 |
+
+## Two-bit register demo
+
+Run a two-bit register from one flip-flop declaration.
+
+```powershell
+cabal run gatework -- --netlist fixtures/reg2.net --duration 10 --output reg2.vcd --set d0=1,d1=0 --at 4 d0=0,d1=1 --at 6 rst=1 --at 8 rst=0,d0=1,d1=1
+```
+
+The `d=` and `q=` fields take comma-separated signal lists.
+The register samples every bit on each rising clock edge.
+
+| Time | d0 | d1 | rst | q0 | q1 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 1 | 0 | 0 | 0 | 0 |
+| 1 | 1 | 0 | 0 | 1 | 0 |
+| 4 | 0 | 1 | 0 | 1 | 0 |
+| 5 | 0 | 1 | 0 | 0 | 1 |
+| 6 | 0 | 1 | 1 | 0 | 0 |
+| 8 | 1 | 1 | 0 | 0 | 0 |
+| 9 | 1 | 1 | 0 | 1 | 1 |
+
 ## Sample output
 
 The file `fixtures/counter.golden.vcd` holds the complete counter waveform.
@@ -202,6 +249,9 @@ This excerpt shows the first two timestamps:
 
 Here `!` is the data input `d`, `"` is the output `q`, and `#` is the clock `clk`.
 
+The files `fixtures/reset.golden.vcd` and `fixtures/reg2.golden.vcd` hold
+the reset and two-bit register waveforms.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -222,28 +272,45 @@ dff state clock=clk d=a q=state_q init=0
 
 Supported gates are AND, OR, XOR, and NOT.
 A gate output must have a `wire` declaration.
-A flip-flop uses `clock=`, `d=`, `q=`, and optional `init=` fields.
+A flip-flop uses `clock=`, `d=`, and `q=` fields.
+It accepts optional `init=`, `rst=`, and `width=` fields.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
+
+Use comma-separated lists to build a wider flip-flop.
+The lists for `d=` and `q=` must have equal length.
+The `init=` list must match that length or use one value for all bits.
+The `width=` field is optional and must match the list length.
+
+```text
+dff state clock=clk d=a q=state_q init=0
+dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 rst=reset
+```
+
+The `rst=` field names an active-high reset signal.
+Reset acts asynchronously. It does not wait for a clock edge.
+An asserted reset forces every bit to its initial value.
 
 ## Verification
 
 The test suite has two parts.
-Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, and golden VCD output.
-QuickCheck properties cover gate algebra, full adder correctness, and scheduled input sampling.
+Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, reset behavior, register width, and golden VCD output.
+QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, and register width.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
 The adder property compares the simulation with integer addition over random four-bit values.
 The scheduled-input property compares each sampled flip-flop value with a reference model.
+The reset property compares the waveform with a reference model of reset and clock events.
+The width property compares each register bit with a per-bit reference model.
 The entry-point property shows that both simulation entry points produce identical output.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter and register VCD text.
-CI runs all three demos and compares the counter and register output with their golden files.
+Golden tests compare the complete counter, register, reset, and two-bit register VCD text.
+CI runs all five demos and compares their output with the golden files.
 
 ## Limitations
 
@@ -254,16 +321,19 @@ Zero-delay gates can show combinational settling transients at clock edges.
 Input changes apply only at scheduled times.
 They do not react to circuit state.
 VCD output uses one module scope and one-bit signals.
+An asynchronous reset that releases on a clock edge is a race.
+The event order decides the result.
+A wide flip-flop uses one shared reset signal.
 
 ## Roadmap
 
+Release 0.3.0.0 completed reset pins and parameterized flip-flops.
 Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add reset pins and parameterized flip-flops.
-2. Add richer VCD metadata and waveform assertions.
-3. Add more gates and hierarchical netlists.
+1. Add richer VCD metadata and waveform assertions.
+2. Add more gates and hierarchical netlists.
 
 ## License
 

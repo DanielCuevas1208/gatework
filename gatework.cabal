@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.2.0.0
+version:            0.3.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D

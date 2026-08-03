@@ -32,5 +32,13 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/register.net --duration 8 --output /tmp/register.vcd --set d=1 --at 2 d=0 --at 4 d=1 --at 6 d=0
       - name: Compare the register demo with the golden file
         run: diff fixtures/register.golden.vcd /tmp/register.vcd
+      - name: Run the reset demo
+        run: cabal run gatework -- --netlist fixtures/reset.net --duration 8 --output /tmp/reset.vcd --set d=1 --at 2 rst=1 --at 4 rst=0 --at 6 d=0
+      - name: Compare the reset demo with the golden file
+        run: diff fixtures/reset.golden.vcd /tmp/reset.vcd
+      - name: Run the two-bit register demo
+        run: cabal run gatework -- --netlist fixtures/reg2.net --duration 10 --output /tmp/reg2.vcd --set d0=1,d1=0 --at 4 d0=0,d1=1 --at 6 rst=1 --at 8 rst=0,d0=1,d1=1
+      - name: Compare the two-bit register demo with the golden file
+        run: diff fixtures/reg2.golden.vcd /tmp/reg2.vcd
       - name: Run the adder demo
         run: cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output /tmp/adder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
