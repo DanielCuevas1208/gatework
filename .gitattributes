@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+*.golden.vcd text eol=lf
+*.net text eol=lf

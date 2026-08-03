@@ -22,9 +22,10 @@ data Clock = Clock
 data DFlipFlop = DFlipFlop
   { dffName :: String
   , dffClock :: String
-  , dffData :: String
-  , dffOutput :: String
-  , dffInitial :: Logic
+  , dffData :: [String]
+  , dffOutput :: [String]
+  , dffInitial :: [Logic]
+  , dffReset :: Maybe String
   }
   deriving (Eq, Show)
 
@@ -106,15 +107,21 @@ parseLine (lineNumber, line) = case words line of
     dffName' <- parseIdentifier lineNumber name
     parsedFields <- mapM (parseField lineNumber) fields
     clock <- requiredField lineNumber "clock" parsedFields
-    dataInput <- requiredField lineNumber "d" parsedFields
-    output <- requiredField lineNumber "q" parsedFields
-    initial <- case lookup "init" parsedFields of
-      Nothing -> Right Low
-      Just value -> maybe (Left (lineError lineNumber "init must be 0 or 1")) Right (parseLogic value)
+    dataText <- requiredField lineNumber "d" parsedFields
+    outputText <- requiredField lineNumber "q" parsedFields
     clockName <- parseIdentifier lineNumber clock
-    dataName <- parseIdentifier lineNumber dataInput
-    outputName <- parseIdentifier lineNumber output
-    pure (FlipFlopDeclaration (DFlipFlop dffName' clockName dataName outputName initial))
+    dataNames <- parseSignalList lineNumber "d" dataText
+    outputNames <- parseSignalList lineNumber "q" outputText
+    unless (not (null dataNames)) $
+      Left (lineError lineNumber "dff requires at least one data input")
+    unless (length dataNames == length outputNames) $
+      Left (lineError lineNumber "dff data and output lists must have equal width")
+    width <- parseDffWidth lineNumber (length dataNames) parsedFields
+    initial <- parseInitList lineNumber width parsedFields
+    reset <- case lookup "rst" parsedFields of
+      Nothing -> Right Nothing
+      Just value -> Just <$> parseIdentifier lineNumber value
+    pure (FlipFlopDeclaration (DFlipFlop dffName' clockName dataNames outputNames initial reset))
   _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, or dff declaration")
 
 parsePorts :: Int -> String -> Either String [String]
@@ -131,8 +138,49 @@ parsePorts lineNumber token
 parseField :: Int -> String -> Either String (String, String)
 parseField lineNumber field = case break (== '=') field of
   (key, '=' : value)
-    | key `elem` ["clock", "d", "q", "init"] && not (null value) -> Right (key, value)
+    | key `elem` ["clock", "d", "q", "init", "rst", "width"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
+
+parseSignalList :: Int -> String -> String -> Either String [String]
+parseSignalList lineNumber key value = do
+  let names = splitOn ',' value
+  unless (all (not . null) names) $
+    Left (lineError lineNumber ("dff " ++ key ++ " list cannot contain empty entries"))
+  mapM (parseIdentifier lineNumber) names
+
+parseDffWidth :: Int -> Int -> [(String, String)] -> Either String Int
+parseDffWidth lineNumber impliedWidth fields = case lookup "width" fields of
+  Nothing -> Right impliedWidth
+  Just value -> do
+    width <- parseDecimal lineNumber "width" value
+    unless (width >= 1) $
+      Left (lineError lineNumber "width must be a positive integer")
+    unless (width == impliedWidth) $
+      Left (lineError lineNumber "width must match the number of dff data signals")
+    pure width
+
+parseInitList :: Int -> Int -> [(String, String)] -> Either String [Logic]
+parseInitList lineNumber width fields = case lookup "init" fields of
+  Nothing -> Right (replicate width Low)
+  Just value -> case splitOn ',' value of
+    [single] -> maybe
+      (Left (lineError lineNumber "init must be 0 or 1"))
+      (Right . replicate width)
+      (parseLogic single)
+    values -> do
+      unless (length values == width) $
+        Left (lineError lineNumber "init list width must match dff width")
+      mapM parseInitValue values
+  where
+    parseInitValue token = maybe
+      (Left (lineError lineNumber "init must be 0 or 1"))
+      Right
+      (parseLogic token)
+
+parseDecimal :: Int -> String -> String -> Either String Int
+parseDecimal lineNumber key token = case reads token of
+  [(number, "")] -> Right number
+  _ -> Left (lineError lineNumber (key ++ " must be an integer"))
 
 requiredField :: Int -> String -> [(String, String)] -> Either String String
 requiredField lineNumber key fields = case lookup key fields of
@@ -161,7 +209,7 @@ validIdentifier name =
 validateNetlist :: Netlist -> Either String Netlist
 validateNetlist netlist = do
   let clockNames = map clockSignal (netlistClocks netlist)
-      dffOutputs = map dffOutput (netlistFlipFlops netlist)
+      dffOutputs = concatMap dffOutput (netlistFlipFlops netlist)
       declared = netlistInputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs
       componentNames = map gateName (netlistGates netlist) ++ map dffName (netlistFlipFlops netlist)
       driven = map gateOutput (netlistGates netlist) ++ dffOutputs
@@ -183,7 +231,8 @@ checkFlipFlop :: [String] -> [String] -> DFlipFlop -> Either String ()
 checkFlipFlop declared clocks flipFlop = do
   unless (dffClock flipFlop `elem` clocks) $
     Left ("dff clock is not declared: " ++ dffClock flipFlop)
-  checkKnown declared "dff data input" (dffData flipFlop)
+  mapM_ (checkKnown declared "dff data input") (dffData flipFlop)
+  mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
 
 checkKnown :: [String] -> String -> String -> Either String ()
 checkKnown declared label name =
@@ -204,7 +253,7 @@ netlistSignals netlist = nub
   ( netlistInputs netlist
       ++ netlistOutputs netlist
       ++ map clockSignal (netlistClocks netlist)
-      ++ map dffOutput (netlistFlipFlops netlist)
+      ++ concatMap dffOutput (netlistFlipFlops netlist)
       ++ netlistWires netlist
       ++ map gateOutput (netlistGates netlist)
   )

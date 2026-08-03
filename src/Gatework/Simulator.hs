@@ -24,7 +24,7 @@ data Simulation = Simulation
 
 data Pending
   = SignalEvent String Logic
-  | FlipFlopBatch [(DFlipFlop, Logic)]
+  | FlipFlopBatch [(DFlipFlop, Int, Logic)]
 
 type EventQueue = Map Time [Pending]
 type State = Map String Logic
@@ -81,10 +81,14 @@ initialState :: Netlist -> [(String, Logic)] -> State
 initialState netlist overrides =
   Map.union (Map.fromList overrides) dffState
   where
-    dffState = foldl'
-      (\state flipFlop -> Map.insert (dffOutput flipFlop) (dffInitial flipFlop) state)
+    dffState = foldl' addDffBits
       (Map.fromList [(signal, Low) | signal <- netlistSignals netlist])
       (netlistFlipFlops netlist)
+    addDffBits state flipFlop =
+      foldl'
+        (\current (output, value) -> Map.insert output value current)
+        state
+        (zip (dffOutput flipFlop) (dffInitial flipFlop))
 
 initialWaveform :: Netlist -> State -> Changes
 initialWaveform netlist state =
@@ -150,12 +154,12 @@ processSignalEvent netlist duration time signal value pending queue state change
               gateEvents = gatesForSignals netlist [signal] nextState
               flipFlopEvents =
                 if oldValue == Low && value == High
-                  then [FlipFlopBatch (sampleFlipFlops netlist signal nextState)]
+                  then [FlipFlopBatch (edgeSamples netlist signal nextState)]
                   else []
           in settleAtTime netlist duration time (pending ++ flipFlopEvents ++ gateEvents)
                queue nextState nextChanges (steps + 1)
 
-processFlipFlopBatch :: Netlist -> Time -> Time -> [(DFlipFlop, Logic)] -> [Pending] -> EventQueue -> State -> Changes -> Int
+processFlipFlopBatch :: Netlist -> Time -> Time -> [(DFlipFlop, Int, Logic)] -> [Pending] -> EventQueue -> State -> Changes -> Int
   -> Either String (EventQueue, State, Changes)
 processFlipFlopBatch netlist duration time samples pending queue state changes steps =
   let (nextState, nextChanges, changedOutputs) = foldl' applySample (state, changes, []) samples
@@ -163,8 +167,8 @@ processFlipFlopBatch netlist duration time samples pending queue state changes s
   in settleAtTime netlist duration time (pending ++ gateEvents)
        queue nextState nextChanges (steps + 1)
   where
-    applySample (currentState, currentChanges, changed) (flipFlop, value) =
-      let output = dffOutput flipFlop
+    applySample (currentState, currentChanges, changed) (flipFlop, index, value) =
+      let output = dffOutput flipFlop !! index
       in case Map.lookup output currentState of
         Nothing -> (currentState, currentChanges, changed)
         Just oldValue
@@ -175,12 +179,37 @@ processFlipFlopBatch netlist duration time samples pending queue state changes s
               , changed ++ [output]
               )
 
-sampleFlipFlops :: Netlist -> String -> State -> [(DFlipFlop, Logic)]
+sampleFlipFlops :: Netlist -> String -> State -> [(DFlipFlop, Int, Logic)]
 sampleFlipFlops netlist clock state =
-  [ (flipFlop, Map.findWithDefault Low (dffData flipFlop) state)
+  [ (flipFlop, index, dffSampleValue flipFlop index state)
   | flipFlop <- netlistFlipFlops netlist
   , dffClock flipFlop == clock
+  , index <- [0 .. dffWidth flipFlop - 1]
   ]
+
+forcedResetSamples :: Netlist -> String -> [(DFlipFlop, Int, Logic)]
+forcedResetSamples netlist reset =
+  [ (flipFlop, index, dffInitial flipFlop !! index)
+  | flipFlop <- netlistFlipFlops netlist
+  , dffReset flipFlop == Just reset
+  , index <- [0 .. dffWidth flipFlop - 1]
+  ]
+
+edgeSamples :: Netlist -> String -> State -> [(DFlipFlop, Int, Logic)]
+edgeSamples netlist signal state =
+  sampleFlipFlops netlist signal state ++ forcedResetSamples netlist signal
+
+dffSampleValue :: DFlipFlop -> Int -> State -> Logic
+dffSampleValue flipFlop index state
+  | resetAsserted = dffInitial flipFlop !! index
+  | otherwise = Map.findWithDefault Low (dffData flipFlop !! index) state
+  where
+    resetAsserted = case dffReset flipFlop of
+      Just reset -> Map.findWithDefault Low reset state == High
+      Nothing -> False
+
+dffWidth :: DFlipFlop -> Int
+dffWidth flipFlop = length (dffData flipFlop)
 
 gatesForSignals :: Netlist -> [String] -> State -> [Pending]
 gatesForSignals netlist changedSignals state =
