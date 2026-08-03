@@ -1,0 +1,30 @@
+# Four-bit bus operations with gates and a register.
+module invert_bus (a[4]) -> (n[4])
+  gate NOT invert (a) -> n
+end
+
+input a[4]
+input b[4]
+output x[4]
+output n[4]
+output q[4]
+clock clk period=2
+
+wire x[4]
+wire n[4]
+wire hi[2]
+wire c0
+
+gate XOR combine (a,b) -> x
+instance invert_bus inv (x) -> (n)
+gate AND mask (a[3:2],b[3:2]) -> hi
+gate OR first (a[0],b[0]) -> c0
+dff reg clock=clk d=x q=q init=0,0,0,0
+
+assert x[0] = 1 at 0
+assert x[3] = 1 at 0
+assert n[0] = 0 at 0
+assert hi[0] = 0 at 0
+assert hi[1] = 0 at 0
+assert c0 = 1 at 0
+assert q[2] = 1 at 2

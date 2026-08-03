@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Control.Monad (forM)
+import Data.Bits (xor)
 import Data.Either (isLeft)
 import Data.List (foldl', sortOn)
 import Gatework.Logic (GateType (..), Logic (..), evalGate, parseLogic)
@@ -201,6 +202,22 @@ main = do
     , testUndefinedFixture
     , testGoldenTribufVCD
     , testGoldenUnknownVCD
+    , testBusDeclarations
+    , testBusGateBitwise
+    , testBusBitReference
+    , testBusSliceReference
+    , testBusRegisterSamples
+    , testBusAssertions
+    , testBusModulePorts
+    , testBusFixture
+    , testParserRejectsBusOutOfRange
+    , testParserRejectsBusWidthMismatch
+    , testParserRejectsBusInvalidSlice
+    , testParserRejectsBusWholeAssertion
+    , testParserRejectsBusDffWidthMismatch
+    , testParserRejectsBusConflictingWidths
+    , testParserRejectsBusInstancePortMismatch
+    , testGoldenBusVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -240,6 +257,9 @@ main = do
     , ("an enabled buffer passes known data", quickCheckResult propTribufEnable)
     , ("tri-state fixture stays consistent", quickCheckResult (propTribufFixtureSound tristate))
     , ("unknown fixture starts unclocked", quickCheckResult (propUnknownFixtureSampling unknown))
+    , ("bus XOR matches the bitwise reference", quickCheckResult propBusXorBitwise)
+    , ("bus register samples every bit", quickCheckResult propBusRegisterSampling)
+    , ("bus module matches the flat circuit", quickCheckResult propBusModuleMatchesFlat)
     ]
     $ \(label, action) -> do
       result <- action
@@ -1194,6 +1214,244 @@ testGoldenUnknownVCD = do
         pure (renderVCD simulation)
   check "undefined VCD matches golden file" (actual == Right golden)
 
+testBusDeclarations :: IO Bool
+testBusDeclarations =
+  check "bus declarations expand to single-bit signals" $ case
+    parseNetlist (unlines
+      [ "input a[4]"
+      , "output x[2]"
+      , "wire x[2]"
+      , "wire w[3]"
+      ]) of
+      Right netlist ->
+        netlistInputs netlist == ["a[0]", "a[1]", "a[2]", "a[3]"]
+          && netlistOutputs netlist == ["x[0]", "x[1]"]
+          && netlistWires netlist == ["x[0]", "x[1]", "w[0]", "w[1]", "w[2]"]
+      Left _ -> False
+
+testBusGateBitwise :: IO Bool
+testBusGateBitwise = case
+  parseNetlist (unlines
+    [ "input a[4]"
+    , "input b[4]"
+    , "output x[4]"
+    , "wire x[4]"
+    , "gate XOR combine (a,b) -> x"
+    ]) of
+    Left _ -> check "a bus gate applies bitwise" False
+    Right netlist -> check "a bus gate applies bitwise" $ case
+      simulateWithInputs netlist (busInputs "a" 5 4 ++ busInputs "b" 10 4) 0 of
+        Right simulation ->
+          valueAt simulation "x[0]" 0 == High
+            && valueAt simulation "x[1]" 0 == High
+            && valueAt simulation "x[2]" 0 == High
+            && valueAt simulation "x[3]" 0 == High
+        Left _ -> False
+
+testBusBitReference :: IO Bool
+testBusBitReference = case
+  parseNetlist (unlines
+    [ "input a[4]"
+    , "input b[4]"
+    , "output c0"
+    , "output c1"
+    , "wire c0"
+    , "wire c1"
+    , "gate AND first (a[0],b[0]) -> c0"
+    , "gate OR last (a[3],b[3]) -> c1"
+    ]) of
+    Left _ -> check "a bit reference reads one bus element" False
+    Right netlist -> check "a bit reference reads one bus element" $ case
+      simulateWithInputs netlist (busInputs "a" 5 4 ++ busInputs "b" 10 4) 0 of
+        Right simulation ->
+          valueAt simulation "c0" 0 == Low
+            && valueAt simulation "c1" 0 == High
+        Left _ -> False
+
+testBusSliceReference :: IO Bool
+testBusSliceReference = case
+  parseNetlist (unlines
+    [ "input a[4]"
+    , "input b[4]"
+    , "output hi[2]"
+    , "wire hi[2]"
+    , "gate AND mask (a[3:2],b[3:2]) -> hi"
+    ]) of
+    Left _ -> check "a slice reference pairs equal widths" False
+    Right netlist -> check "a slice reference pairs equal widths" $ case
+      simulateWithInputs netlist (busInputs "a" 5 4 ++ busInputs "b" 10 4) 0 of
+        Right simulation ->
+          valueAt simulation "hi[0]" 0 == Low
+            && valueAt simulation "hi[1]" 0 == Low
+        Left _ -> False
+
+testBusRegisterSamples :: IO Bool
+testBusRegisterSamples = case
+  parseNetlist (unlines
+    [ "input a[4]"
+    , "output q[4]"
+    , "clock clk period=2"
+    , "dff reg clock=clk d=a q=q init=0,0,0,0"
+    ]) of
+    Left _ -> check "a bus register samples every bit" False
+    Right netlist -> check "a bus register samples every bit" $ case
+      simulateWithInputs netlist (busInputs "a" 9 4) 3 of
+        Right simulation ->
+          valueAt simulation "q[0]" 1 == High
+            && valueAt simulation "q[1]" 1 == Low
+            && valueAt simulation "q[2]" 1 == Low
+            && valueAt simulation "q[3]" 1 == High
+        Left _ -> False
+
+testBusAssertions :: IO Bool
+testBusAssertions = case
+  parseNetlist (unlines
+    [ "input a[4]"
+    , "input b[4]"
+    , "output x[4]"
+    , "wire x[4]"
+    , "gate XOR combine (a,b) -> x"
+    , "assert x[0] = 1 at 0"
+    , "assert x[3] = 1 at 0"
+    ]) of
+    Left _ -> check "assertions accept bus bits" False
+    Right netlist -> check "assertions accept bus bits" $ case
+      simulateWithInputs netlist (busInputs "a" 5 4 ++ busInputs "b" 10 4) 0 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 2
+        Left _ -> False
+
+testBusModulePorts :: IO Bool
+testBusModulePorts = case
+  parseNetlist (unlines
+    [ "module invert_bus (a[4]) -> (n[4])"
+    , "  gate NOT invert (a) -> n"
+    , "end"
+    , "input a[4]"
+    , "output n[4]"
+    , "wire n[4]"
+    , "instance invert_bus inv (a) -> (n)"
+    ]) of
+    Left _ -> check "modules pass buses through ports" False
+    Right netlist -> check "modules pass buses through ports" $ case
+      simulateWithInputs netlist (busInputs "a" 10 4) 0 of
+        Right simulation ->
+          valueAt simulation "n[0]" 0 == High
+            && valueAt simulation "n[1]" 0 == Low
+            && valueAt simulation "n[2]" 0 == High
+            && valueAt simulation "n[3]" 0 == Low
+        Left _ -> False
+
+testBusFixture :: IO Bool
+testBusFixture = do
+  source <- readFile "fixtures/bus.net"
+  case parseNetlist source of
+    Left _ -> check "bus fixture simulates bus operations" False
+    Right netlist -> check "bus fixture simulates bus operations" $ case
+      simulateWithInputs netlist (busInputs "a" 5 4 ++ busInputs "b" 10 4) 3 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && valueAt simulation "x[0]" 0 == High
+            && valueAt simulation "x[3]" 0 == High
+            && valueAt simulation "n[0]" 0 == Low
+            && valueAt simulation "hi[0]" 0 == Low
+            && valueAt simulation "hi[1]" 0 == Low
+            && valueAt simulation "c0" 0 == High
+            && valueAt simulation "q[2]" 1 == High
+        Left _ -> False
+
+testParserRejectsBusOutOfRange :: IO Bool
+testParserRejectsBusOutOfRange =
+  check "parser rejects out-of-range bus indexes" $
+    isLeft (parseNetlist (unlines
+      [ "input a[4]"
+      , "wire x"
+      , "gate NOT inv (a[4]) -> x"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "input a[4]"
+      , "wire x[2]"
+      , "gate NOT inv (a[5:2]) -> x"
+      ]))
+
+testParserRejectsBusWidthMismatch :: IO Bool
+testParserRejectsBusWidthMismatch =
+  check "parser rejects mixed gate widths" $ isLeft $
+    parseNetlist (unlines
+      [ "input a[4]"
+      , "input b"
+      , "output x[4]"
+      , "wire x[4]"
+      , "gate XOR combine (a,b) -> x"
+      ])
+
+testParserRejectsBusInvalidSlice :: IO Bool
+testParserRejectsBusInvalidSlice =
+  check "parser rejects invalid slice syntax" $
+    isLeft (parseNetlist (unlines
+      [ "input a[4]"
+      , "wire x"
+      , "gate NOT inv (a[2:5]) -> x"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "input a[4]"
+      , "wire x"
+      , "gate NOT inv (a[x]) -> x"
+      ]))
+
+testParserRejectsBusWholeAssertion :: IO Bool
+testParserRejectsBusWholeAssertion =
+  check "parser rejects whole-bus assertions" $ isLeft $
+    parseNetlist (unlines
+      [ "input a[4]"
+      , "output x[4]"
+      , "wire x[4]"
+      , "gate NOT inv (a) -> x"
+      , "assert x = 0 at 0"
+      ])
+
+testParserRejectsBusDffWidthMismatch :: IO Bool
+testParserRejectsBusDffWidthMismatch =
+  check "parser rejects mismatched dff bus widths" $ isLeft $
+    parseNetlist (unlines
+      [ "input a[4]"
+      , "output q[2]"
+      , "clock clk period=2"
+      , "dff reg clock=clk d=a q=q init=0,0"
+      ])
+
+testParserRejectsBusConflictingWidths :: IO Bool
+testParserRejectsBusConflictingWidths =
+  check "parser rejects conflicting bus widths" $ isLeft $
+    parseNetlist (unlines
+      [ "input a[4]"
+      , "wire a[2]"
+      ])
+
+testParserRejectsBusInstancePortMismatch :: IO Bool
+testParserRejectsBusInstancePortMismatch =
+  check "parser rejects mismatched instance bus ports" $ isLeft $
+    parseNetlist (unlines
+      [ "module invert_bus (a[4]) -> (n[4])"
+      , "  gate NOT invert (a) -> n"
+      , "end"
+      , "input a"
+      , "output n[4]"
+      , "wire n[4]"
+      , "instance invert_bus inv (a) -> (n)"
+      ])
+
+testGoldenBusVCD :: IO Bool
+testGoldenBusVCD = do
+  source <- readFile "fixtures/bus.net"
+  golden <- readFile "fixtures/bus.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithInputs netlist (busInputs "a" 5 4 ++ busInputs "b" 10 4) 3
+        pure (renderVCD simulation)
+  check "bus VCD matches golden file" (actual == Right golden)
+
 evalTwoState :: GateType -> [Logic] -> Logic
 evalTwoState And inputs = if all (== High) inputs then High else Low
 evalTwoState Or inputs = if any (== High) inputs then High else Low
@@ -1280,6 +1538,107 @@ propUnknownFixtureSampling netlist =
               && valueAt simulation "nq" 3 == invertTwo dataValue
           )
       Left _ -> property False
+
+busXorNetlist :: Either String Netlist
+busXorNetlist = parseNetlist (unlines
+  [ "input a[4]"
+  , "input b[4]"
+  , "output x[4]"
+  , "wire x[4]"
+  , "gate XOR combine (a,b) -> x"
+  ])
+
+busRegisterNetlist :: Either String Netlist
+busRegisterNetlist = parseNetlist (unlines
+  [ "input a[4]"
+  , "output q[4]"
+  , "clock clk period=2"
+  , "dff reg clock=clk d=a q=q init=0,0,0,0"
+  ])
+
+flatBusNetlist :: Either String Netlist
+flatBusNetlist = parseNetlist (unlines
+  [ "input a[4]"
+  , "input b[4]"
+  , "output x[4]"
+  , "output n[4]"
+  , "output q[4]"
+  , "clock clk period=2"
+  , "wire x[4]"
+  , "wire n[4]"
+  , "gate XOR combine (a,b) -> x"
+  , "gate NOT invert (x) -> n"
+  , "dff reg clock=clk d=x q=q init=0,0,0,0"
+  ])
+
+hierarchicalBusNetlist :: Either String Netlist
+hierarchicalBusNetlist = parseNetlist (unlines
+  [ "module bitnot (a[4]) -> (n[4])"
+  , "  gate NOT invert (a) -> n"
+  , "end"
+  , "input a[4]"
+  , "input b[4]"
+  , "output x[4]"
+  , "output n[4]"
+  , "output q[4]"
+  , "clock clk period=2"
+  , "wire x[4]"
+  , "wire n[4]"
+  , "gate XOR combine (a,b) -> x"
+  , "instance bitnot inv (x) -> (n)"
+  , "dff reg clock=clk d=x q=q init=0,0,0,0"
+  ])
+
+propBusXorBitwise :: Property
+propBusXorBitwise =
+  forAll (choose (0, 15)) $ \aValue ->
+    forAll (choose (0, 15)) $ \bValue ->
+      case busXorNetlist of
+        Left _ -> property False
+        Right netlist ->
+          case simulateWithInputs netlist (busInputs "a" aValue 4 ++ busInputs "b" bValue 4) 0 of
+            Right simulation -> property (busValueAt simulation "x" 4 0 == aValue `xor` bValue)
+            Left _ -> property False
+
+propBusRegisterSampling :: Property
+propBusRegisterSampling =
+  forAll (choose (0, 15)) $ \aValue ->
+    case busRegisterNetlist of
+      Left _ -> property False
+      Right netlist ->
+        case simulateWithInputs netlist (busInputs "a" aValue 4) 3 of
+          Right simulation ->
+            property
+              ( busValueAt simulation "q" 4 0 == 0
+                  && busValueAt simulation "q" 4 1 == aValue
+                  && busValueAt simulation "q" 4 3 == aValue
+              )
+          Left _ -> property False
+
+propBusModuleMatchesFlat :: Property
+propBusModuleMatchesFlat =
+  forAll (choose (0, 15)) $ \aValue ->
+    forAll (choose (0, 15)) $ \bValue ->
+      forAll (choose (0, 8)) $ \duration ->
+        case (flatBusNetlist, hierarchicalBusNetlist) of
+          (Right flat, Right hierarchical) ->
+            case ( simulateWithInputs flat (busInputs "a" aValue 4 ++ busInputs "b" bValue 4) duration
+                 , simulateWithInputs hierarchical (busInputs "a" aValue 4 ++ busInputs "b" bValue 4) duration
+                 ) of
+              (Right flatResult, Right hierarchicalResult) ->
+                property (busSignalsMatch flatResult hierarchicalResult [0 .. duration])
+              _ -> property False
+          _ -> property False
+  where
+    busSignalsMatch flatResult hierarchicalResult times =
+      all (sameAt flatResult hierarchicalResult) times
+    sameAt flatResult hierarchicalResult time =
+      all
+        (\signal -> valueAt flatResult signal time == valueAt hierarchicalResult signal time)
+        [ "x[0]", "x[1]", "x[2]", "x[3]"
+        , "n[0]", "n[1]", "n[2]", "n[3]"
+        , "q[0]", "q[1]", "q[2]", "q[3]"
+        ]
 
 propNandInvertsAnd :: Logical -> Logical -> Bool
 propNandInvertsAnd (Logical left) (Logical right) =
@@ -1562,6 +1921,19 @@ bit position value = (value `div` 2 ^ position) `mod` 2
 logicForBit :: Int -> Logic
 logicForBit 0 = Low
 logicForBit _ = High
+
+busInputs :: String -> Int -> Int -> [(String, Logic)]
+busInputs base value width =
+  [ (base ++ "[" ++ show index ++ "]", logicForBit (bit index value))
+  | index <- [0 .. width - 1]
+  ]
+
+busValueAt :: Simulation -> String -> Int -> Time -> Int
+busValueAt simulation base width time =
+  sum
+    [ (if valueAt simulation (base ++ "[" ++ show index ++ "]") time == High then 1 else 0) * (2 :: Int) ^ index
+    | index <- [0 .. width - 1]
+    ]
 
 resultToInt :: Simulation -> Int
 resultToInt simulation =

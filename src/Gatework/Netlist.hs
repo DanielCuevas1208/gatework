@@ -12,7 +12,7 @@ module Gatework.Netlist
   , parseNetlistFile
   ) where
 
-import Control.Monad (unless)
+import Control.Monad (foldM, unless)
 import Data.Char (isAlphaNum, isSpace, toUpper)
 import Data.List (foldl', nub)
 import Data.Map.Strict (Map)
@@ -54,8 +54,8 @@ data Gate = Gate
 
 data Module = Module
   { moduleName :: String
-  , moduleInputs :: [String]
-  , moduleOutputs :: [String]
+  , moduleInputPorts :: [(String, Int)]
+  , moduleOutputPorts :: [(String, Int)]
   , moduleBody :: [Declaration]
   }
   deriving (Eq, Show)
@@ -90,6 +90,37 @@ data Declaration
   | InstanceDeclaration Instance
   deriving (Eq, Show)
 
+data RefBits
+  = RefWhole
+  | RefBit Int
+  | RefSlice Int Int
+  deriving (Eq, Show)
+
+data Ref = Ref
+  { refBase :: String
+  , refBits :: RefBits
+  }
+  deriving (Eq, Show)
+
+data RawDeclaration
+  = RawInput String Int
+  | RawOutput String Int
+  | RawWire String Int
+  | RawClock Clock
+  | RawGate GateType String [Ref] Ref
+  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref)
+  | RawAssert Ref Logic Time
+  | RawInstance String String [Ref] [Ref]
+  deriving (Eq, Show)
+
+data RawModule = RawModule
+  { rawModuleName :: String
+  , rawModuleInputs :: [(String, Int)]
+  , rawModuleOutputs :: [(String, Int)]
+  , rawModuleBody :: [RawDeclaration]
+  }
+  deriving (Eq, Show)
+
 data ParsedNetlist = ParsedNetlist
   { parsedModules :: Map String Module
   , parsedDeclarations :: [Declaration]
@@ -103,9 +134,12 @@ parseNetlistFile path = parseNetlist <$> readFile path
 
 parseNetlist :: String -> Either String Netlist
 parseNetlist source = do
-  parsed <- parseStatements (usefulLines source)
-  validateModules (parsedModules parsed)
-  netlist <- flattenParsed parsed
+  (rawModules, rawDeclarations) <- parseStatements (usefulLines source)
+  let signatureModules = signatureOnlyModules rawModules
+  modules <- mapM (resolveRawModule signatureModules) rawModules
+  validateModules modules
+  declarations <- resolveTopLevel signatureModules rawDeclarations
+  netlist <- flattenParsed (ParsedNetlist modules declarations)
   _ <- validateNetlist netlist
   pure netlist
 
@@ -130,22 +164,22 @@ addDeclaration netlist declaration = case declaration of
     netlist {netlistAssertions = netlistAssertions netlist ++ [assertion]}
   InstanceDeclaration _ -> netlist
 
-parseStatements :: [(Int, String)] -> Either String ParsedNetlist
+parseStatements :: [(Int, String)] -> Either String (Map String RawModule, [RawDeclaration])
 parseStatements statementLines = go statementLines Map.empty []
   where
-    go remaining modules declarations = case remaining of
-      [] -> Right (ParsedNetlist modules (reverse declarations))
+    go remaining modules rawDeclarations = case remaining of
+      [] -> Right (modules, reverse rawDeclarations)
       (lineNumber, line) : rest -> case words line of
         "module" : _ -> do
           (moduleDef, remainder) <- parseModuleBlock lineNumber line rest
-          if Map.member (moduleName moduleDef) modules
-            then Left ("duplicate module: " ++ moduleName moduleDef)
-            else go remainder (Map.insert (moduleName moduleDef) moduleDef modules) declarations
+          if Map.member (rawModuleName moduleDef) modules
+            then Left ("duplicate module: " ++ rawModuleName moduleDef)
+            else go remainder (Map.insert (rawModuleName moduleDef) moduleDef modules) rawDeclarations
         _ -> do
           declaration <- parseLine (lineNumber, line)
-          go rest modules (declaration : declarations)
+          go rest modules (declaration : rawDeclarations)
 
-parseModuleBlock :: Int -> String -> [(Int, String)] -> Either String (Module, [(Int, String)])
+parseModuleBlock :: Int -> String -> [(Int, String)] -> Either String (RawModule, [(Int, String)])
 parseModuleBlock lineNumber line rest = do
   (name, inputs, outputs) <- case words line of
     ["module", moduleName', ports, "->", outputPorts] ->
@@ -157,12 +191,12 @@ parseModuleBlock lineNumber line rest = do
     (_ : afterEnd) -> do
       unless (not (null bodyLines)) $
         Left (lineError lineNumber ("module has an empty body: " ++ name))
-      declarations <- mapM parseModuleLine bodyLines
-      pure (Module name inputs outputs declarations, afterEnd)
+      rawBody <- mapM parseModuleLine bodyLines
+      pure (RawModule name inputs outputs rawBody, afterEnd)
   where
     isModuleEnd (_, lineContent) = words lineContent == ["end"]
 
-parseModuleLine :: (Int, String) -> Either String Declaration
+parseModuleLine :: (Int, String) -> Either String RawDeclaration
 parseModuleLine (lineNumber, line) = case words line of
   ("input" : _) -> Left (lineError lineNumber "input declarations are not allowed inside a module")
   ("output" : _) -> Left (lineError lineNumber "output declarations are not allowed inside a module")
@@ -170,85 +204,83 @@ parseModuleLine (lineNumber, line) = case words line of
   ("end" : _) -> Left (lineError lineNumber "unexpected end outside a module block")
   _ -> parseLine (lineNumber, line)
 
-parseModuleSignature :: Int -> String -> String -> String -> Either String (String, [String], [String])
+parseModuleSignature :: Int -> String -> String -> String -> Either String (String, [(String, Int)], [(String, Int)])
 parseModuleSignature lineNumber name inputPorts outputPorts = do
   moduleName' <- parseIdentifier lineNumber name
-  inputNames <- parsePorts lineNumber inputPorts
-  outputNames <- parsePorts lineNumber outputPorts
+  inputNames <- parsePortsWithWidths lineNumber inputPorts
+  outputNames <- parsePortsWithWidths lineNumber outputPorts
   unless (not (null inputNames)) $
     Left (lineError lineNumber "module requires at least one input port")
   unless (not (null outputNames)) $
     Left (lineError lineNumber "module requires at least one output port")
-  unless (null (duplicates inputNames)) $
+  unless (null (duplicates (map fst inputNames))) $
     Left (lineError lineNumber "module input ports cannot repeat")
-  unless (null (duplicates outputNames)) $
+  unless (null (duplicates (map fst outputNames))) $
     Left (lineError lineNumber "module output ports cannot repeat")
-  let overlap = [port | port <- inputNames, port `elem` outputNames]
+  let overlap = [port | (port, _) <- inputNames, port `elem` map fst outputNames]
   unless (null overlap) $
     Left (lineError lineNumber "module ports cannot be both input and output")
   pure (moduleName', inputNames, outputNames)
 
-parseLine :: (Int, String) -> Either String Declaration
+parseLine :: (Int, String) -> Either String RawDeclaration
 parseLine (lineNumber, line) = case words line of
-  ["input", name] -> InputDeclaration <$> parseIdentifier lineNumber name
-  ["output", name] -> OutputDeclaration <$> parseIdentifier lineNumber name
-  ["wire", name] -> WireDeclaration <$> parseIdentifier lineNumber name
+  ["input", name] -> uncurry RawInput <$> parsePort lineNumber name
+  ["output", name] -> uncurry RawOutput <$> parsePort lineNumber name
+  ["wire", name] -> uncurry RawWire <$> parsePort lineNumber name
   ["clock", name, period] -> do
     signal <- parseIdentifier lineNumber name
     parsedPeriod <- parseKeyInt lineNumber "period" period
     unless (parsedPeriod >= 2 && even parsedPeriod) $
       Left (lineError lineNumber "clock period must be an even integer of at least two")
-    pure (ClockDeclaration (Clock signal parsedPeriod))
+    pure (RawClock (Clock signal parsedPeriod))
   ["gate", gateText, name, ports, "->", output] -> do
     gate <- maybe (Left (lineError lineNumber ("unknown gate type: " ++ gateText))) Right
       (parseGateType (map toUpper gateText))
     gateName' <- parseIdentifier lineNumber name
-    inputNames <- parsePorts lineNumber ports
-    outputName <- parseIdentifier lineNumber output
-    unless (length inputNames == gateArity gate) $
+    inputRefs <- parsePortList lineNumber ports
+    outputRef <- parseRef lineNumber output
+    unless (length inputRefs == gateArity gate) $
       Left (lineError lineNumber ("gate " ++ name ++ " expects " ++ show (gateArity gate) ++ " inputs"))
-    pure (GateDeclaration (Gate gate gateName' inputNames outputName))
+    pure (RawGate gate gateName' inputRefs outputRef)
   ("dff" : name : fields) -> do
     dffName' <- parseIdentifier lineNumber name
     parsedFields <- mapM (parseField lineNumber) fields
-    clock <- requiredField lineNumber "clock" parsedFields
+    clockRef <- requiredField lineNumber "clock" parsedFields
     dataText <- requiredField lineNumber "d" parsedFields
     outputText <- requiredField lineNumber "q" parsedFields
-    clockName <- parseIdentifier lineNumber clock
-    dataNames <- parseSignalList lineNumber "d" dataText
-    outputNames <- parseSignalList lineNumber "q" outputText
-    unless (not (null dataNames)) $
+    clock <- parseRef lineNumber clockRef
+    dataRefs <- parseRefList lineNumber "d" dataText
+    outputRefs <- parseRefList lineNumber "q" outputText
+    unless (not (null dataRefs)) $
       Left (lineError lineNumber "dff requires at least one data input")
-    unless (length dataNames == length outputNames) $
-      Left (lineError lineNumber "dff data and output lists must have equal width")
-    width <- parseDffWidth lineNumber (length dataNames) parsedFields
-    initial <- parseInitList lineNumber width parsedFields
+    let initText = lookup "init" parsedFields
+        widthText = lookup "width" parsedFields
     reset <- case lookup "rst" parsedFields of
       Nothing -> Right Nothing
-      Just value -> Just <$> parseIdentifier lineNumber value
-    pure (FlipFlopDeclaration (DFlipFlop dffName' clockName dataNames outputNames initial reset))
+      Just value -> Just <$> parseRef lineNumber value
+    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset)
   ["assert", signal, "=", value, "at", timeText] -> do
-    signalName <- parseIdentifier lineNumber signal
+    signalRef <- parseRef lineNumber signal
     logic <- maybe
       (Left (lineError lineNumber "assert value must be 0, 1, x, or z"))
       Right
       (parseLogic value)
     time <- parseAssertTime lineNumber timeText
-    pure (AssertionDeclaration (Assertion signalName logic time))
+    pure (RawAssert signalRef logic time)
   ["instance", moduleText, name, ports, "->", outputs] -> do
     moduleName' <- parseIdentifier lineNumber moduleText
     instanceName' <- parseIdentifier lineNumber name
-    inputNames <- parsePorts lineNumber ports
-    outputNames <- parsePorts lineNumber outputs
-    unless (not (null inputNames)) $
+    inputRefs <- parsePortList lineNumber ports
+    outputRefs <- parsePortList lineNumber outputs
+    unless (not (null inputRefs)) $
       Left (lineError lineNumber "instance requires at least one input")
-    unless (not (null outputNames)) $
+    unless (not (null outputRefs)) $
       Left (lineError lineNumber "instance requires at least one output")
-    pure (InstanceDeclaration (Instance instanceName' moduleName' inputNames outputNames))
+    pure (RawInstance instanceName' moduleName' inputRefs outputRefs)
   _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, dff, assert, or instance declaration")
 
-parsePorts :: Int -> String -> Either String [String]
-parsePorts lineNumber token
+parsePortsWithWidths :: Int -> String -> Either String [(String, Int)]
+parsePortsWithWidths lineNumber token
   | length token < 2 || head token /= '(' || last token /= ')' =
       Left (lineError lineNumber "port lists must use parentheses")
   | otherwise = do
@@ -256,7 +288,62 @@ parsePorts lineNumber token
           names = splitOn ',' body
       unless (not (null body) && all (not . null) names) $
         Left (lineError lineNumber "port lists cannot be empty")
-      mapM (parseIdentifier lineNumber) names
+      mapM (parsePort lineNumber) names
+
+parsePortList :: Int -> String -> Either String [Ref]
+parsePortList lineNumber token
+  | length token < 2 || head token /= '(' || last token /= ')' =
+      Left (lineError lineNumber "port lists must use parentheses")
+  | otherwise = do
+      let body = init (tail token)
+          names = splitOn ',' body
+      unless (not (null body) && all (not . null) names) $
+        Left (lineError lineNumber "port lists cannot be empty")
+      mapM (parseRef lineNumber) names
+
+parsePort :: Int -> String -> Either String (String, Int)
+parsePort lineNumber token = case break (== '[') token of
+  (base, '[' : rest)
+    | not (null rest) && last rest == ']' -> do
+        name <- parseIdentifier lineNumber base
+        width <- parseNonNegative lineNumber "port width" (init rest)
+        unless (width >= 1) $
+          Left (lineError lineNumber "port width must be a positive integer")
+        pure (name, width)
+  (base, []) -> (,) <$> parseIdentifier lineNumber base <*> pure 1
+  _ -> Left (lineError lineNumber ("invalid port: " ++ token))
+
+parseRef :: Int -> String -> Either String Ref
+parseRef lineNumber token = case break (== '[') token of
+  (base, '[' : rest)
+    | not (null rest) && last rest == ']' -> do
+        name <- parseIdentifier lineNumber base
+        bits <- parseRefBits lineNumber (init rest)
+        pure (Ref name bits)
+  (base, []) -> Ref <$> parseIdentifier lineNumber base <*> pure RefWhole
+  _ -> Left (lineError lineNumber ("invalid signal reference: " ++ token))
+
+parseRefBits :: Int -> String -> Either String RefBits
+parseRefBits lineNumber body = case break (== ':') body of
+  (indexText, []) -> RefBit <$> parseIndex lineNumber indexText
+  (hiText, _ : loText) -> do
+    hi <- parseIndex lineNumber hiText
+    lo <- parseIndex lineNumber loText
+    unless (hi >= lo) $
+      Left (lineError lineNumber "slice upper bound must be at least the lower bound")
+    pure (RefSlice hi lo)
+
+parseIndex :: Int -> String -> Either String Int
+parseIndex lineNumber token = case reads token of
+  [(number, "")] | number >= 0 -> Right number
+  _ -> Left (lineError lineNumber ("bit index must be a non-negative integer: " ++ token))
+
+parseRefList :: Int -> String -> String -> Either String [Ref]
+parseRefList lineNumber key value = do
+  let tokens = splitOn ',' value
+  unless (all (not . null) tokens) $
+    Left (lineError lineNumber ("dff " ++ key ++ " list cannot contain empty entries"))
+  mapM (parseRef lineNumber) tokens
 
 parseField :: Int -> String -> Either String (String, String)
 parseField lineNumber field = case break (== '=') field of
@@ -264,52 +351,14 @@ parseField lineNumber field = case break (== '=') field of
     | key `elem` ["clock", "d", "q", "init", "rst", "width"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
 
-parseSignalList :: Int -> String -> String -> Either String [String]
-parseSignalList lineNumber key value = do
-  let names = splitOn ',' value
-  unless (all (not . null) names) $
-    Left (lineError lineNumber ("dff " ++ key ++ " list cannot contain empty entries"))
-  mapM (parseIdentifier lineNumber) names
-
-parseDffWidth :: Int -> Int -> [(String, String)] -> Either String Int
-parseDffWidth lineNumber impliedWidth fields = case lookup "width" fields of
-  Nothing -> Right impliedWidth
-  Just value -> do
-    width <- parseDecimal lineNumber "width" value
-    unless (width >= 1) $
-      Left (lineError lineNumber "width must be a positive integer")
-    unless (width == impliedWidth) $
-      Left (lineError lineNumber "width must match the number of dff data signals")
-    pure width
-
-parseInitList :: Int -> Int -> [(String, String)] -> Either String [Logic]
-parseInitList lineNumber width fields = case lookup "init" fields of
-  Nothing -> Right (replicate width Low)
-  Just value -> case splitOn ',' value of
-    [single] -> maybe
-      (Left (lineError lineNumber "init must be 0, 1, x, or z"))
-      (Right . replicate width)
-      (parseLogic single)
-    values -> do
-      unless (length values == width) $
-        Left (lineError lineNumber "init list width must match dff width")
-      mapM parseInitValue values
-  where
-    parseInitValue token = maybe
-      (Left (lineError lineNumber "init must be 0, 1, x, or z"))
-      Right
-      (parseLogic token)
-
-parseDecimal :: Int -> String -> String -> Either String Int
-parseDecimal lineNumber key token = case reads token of
-  [(number, "")] -> Right number
-  _ -> Left (lineError lineNumber (key ++ " must be an integer"))
+parseNonNegative :: Int -> String -> String -> Either String Int
+parseNonNegative lineNumber key token = case reads token of
+  [(number, "")] | number >= 0 -> Right number
+  _ -> Left (lineError lineNumber (key ++ " must be a non-negative integer"))
 
 parseAssertTime :: Int -> String -> Either String Time
 parseAssertTime lineNumber token = do
-  time <- parseDecimal lineNumber "assert time" token
-  unless (time >= 0) $
-    Left (lineError lineNumber "assert time cannot be negative")
+  time <- parseNonNegative lineNumber "assert time" token
   pure (fromIntegral time)
 
 requiredField :: Int -> String -> [(String, String)] -> Either String String
@@ -335,6 +384,214 @@ validIdentifier :: String -> Bool
 validIdentifier name =
   not (null name)
     && all (\character -> isAlphaNum character || character `elem` "_.$") name
+
+signatureOnlyModules :: Map String RawModule -> Map String Module
+signatureOnlyModules rawModules =
+  Map.map
+    (\raw -> Module (rawModuleName raw) (rawModuleInputs raw) (rawModuleOutputs raw) [])
+    rawModules
+
+resolveRawModule :: Map String Module -> RawModule -> Either String Module
+resolveRawModule signatureModules raw = do
+  widths <- moduleWidths raw
+  body <- concat <$> mapM (resolveDeclaration signatureModules widths) (rawModuleBody raw)
+  pure (Module (rawModuleName raw) (rawModuleInputs raw) (rawModuleOutputs raw) body)
+
+moduleWidths :: RawModule -> Either String (Map String Int)
+moduleWidths raw =
+  foldM addWidth (Map.fromList (rawModuleInputs raw ++ rawModuleOutputs raw)) (rawModuleBody raw)
+  where
+    addWidth widths (RawWire name width) = insertWidth widths name width
+    addWidth widths (RawClock clock) = insertWidth widths (clockSignal clock) 1
+    addWidth widths _ = Right widths
+
+resolveTopLevel :: Map String Module -> [RawDeclaration] -> Either String [Declaration]
+resolveTopLevel signatureModules rawDeclarations = do
+  widths <- topLevelWidths rawDeclarations
+  concat <$> mapM (resolveDeclaration signatureModules widths) rawDeclarations
+
+topLevelWidths :: [RawDeclaration] -> Either String (Map String Int)
+topLevelWidths = foldM addWidth Map.empty
+  where
+    addWidth widths (RawInput name width) = insertWidth widths name width
+    addWidth widths (RawOutput name width) = insertWidth widths name width
+    addWidth widths (RawWire name width) = insertWidth widths name width
+    addWidth widths (RawClock clock) = insertWidth widths (clockSignal clock) 1
+    addWidth widths _ = Right widths
+
+insertWidth :: Map String Int -> String -> Int -> Either String (Map String Int)
+insertWidth widths name width = case Map.lookup name widths of
+  Nothing -> Right (Map.insert name width widths)
+  Just existing
+    | existing == width -> Right widths
+    | otherwise ->
+        Left ("conflicting widths for signal " ++ name ++ ": " ++ show existing ++ " and " ++ show width)
+
+resolveDeclaration :: Map String Module -> Map String Int -> RawDeclaration -> Either String [Declaration]
+resolveDeclaration signatureModules widths declaration = case declaration of
+  RawInput name width -> Right (map InputDeclaration (bitNames name width))
+  RawOutput name width -> Right (map OutputDeclaration (bitNames name width))
+  RawWire name width -> Right (map WireDeclaration (bitNames name width))
+  RawClock clock -> Right [ClockDeclaration clock]
+  RawGate gateKind name inputRefs outputRef ->
+    resolveGate widths gateKind name inputRefs outputRef
+  RawDff name clockRef dataRefs outRefs initText widthText resetRef ->
+    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef
+  RawAssert signalRef value time -> resolveAssertion widths signalRef value time
+  RawInstance name targetModule inputRefs outputRefs ->
+    resolveInstance signatureModules widths name targetModule inputRefs outputRefs
+
+resolveGate :: Map String Int -> GateType -> String -> [Ref] -> Ref -> Either String [Declaration]
+resolveGate widths gateKind name inputRefs outputRef = do
+  inputBits <- mapM (resolveRef widths) inputRefs
+  outputBits <- resolveRef widths outputRef
+  let width = length outputBits
+  unless (all ((== width) . length) inputBits) $
+    Left ("gate " ++ name ++ " mixes bus widths")
+  pure
+    [ GateDeclaration
+        (Gate gateKind (componentName name width index) (map (!! index) inputBits) (outputBits !! index))
+    | index <- [0 .. width - 1]
+    ]
+
+resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref
+  -> Either String [Declaration]
+resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef = do
+  clockName <- case resolveRef widths clockRef of
+    Left message -> Left message
+    Right [signal] -> Right signal
+    Right _ -> Left ("dff " ++ name ++ " clock must reference a single signal")
+  dataBits <- concat <$> mapM (resolveRef widths) dataRefs
+  outputBits <- concat <$> mapM (resolveRef widths) outRefs
+  unless (not (null dataBits)) $
+    Left ("dff " ++ name ++ " requires at least one data input")
+  unless (length dataBits == length outputBits) $
+    Left ("dff " ++ name ++ " data and output widths must match")
+  let width = length outputBits
+  case widthText of
+    Nothing -> pure ()
+    Just text -> do
+      declaredWidth <- parseInt text
+      unless (declaredWidth == width) $
+        Left ("dff " ++ name ++ " width must match the data width")
+  initList <- parseInitValues width initText
+  resetSignal <- case resetRef of
+    Nothing -> Right Nothing
+    Just ref -> case resolveRef widths ref of
+      Left message -> Left message
+      Right [signal] -> Right (Just signal)
+      Right _ -> Left ("dff " ++ name ++ " reset must reference a single signal")
+  pure
+    [ FlipFlopDeclaration
+        (DFlipFlop
+          (componentName name width index)
+          clockName
+          [dataBits !! index]
+          [outputBits !! index]
+          [initList !! index]
+          resetSignal)
+    | index <- [0 .. width - 1]
+    ]
+
+resolveAssertion :: Map String Int -> Ref -> Logic -> Time -> Either String [Declaration]
+resolveAssertion widths signalRef value time = case resolveRef widths signalRef of
+  Left message -> Left message
+  Right [signal] -> Right [AssertionDeclaration (Assertion signal value time)]
+  Right _ -> Left ("assert signal must reference a single bit: " ++ refBase signalRef)
+
+resolveInstance :: Map String Module -> Map String Int -> String -> String -> [Ref] -> [Ref]
+  -> Either String [Declaration]
+resolveInstance signatureModules widths name targetModule inputRefs outputRefs = do
+  moduleDef <- maybe
+    (Left ("instance references an unknown module: " ++ targetModule))
+    Right
+    (Map.lookup targetModule signatureModules)
+  let expectedInputs = map snd (moduleInputPorts moduleDef)
+      expectedOutputs = map snd (moduleOutputPorts moduleDef)
+  unless (length expectedInputs == length inputRefs) $
+    Left ("instance " ++ name ++ " expects " ++ show (length expectedInputs)
+      ++ " inputs, but got " ++ show (length inputRefs))
+  unless (length expectedOutputs == length outputRefs) $
+    Left ("instance " ++ name ++ " expects " ++ show (length expectedOutputs)
+      ++ " outputs, but got " ++ show (length outputRefs))
+  inputSignals <- mapM (checkConnection name) (zip expectedInputs inputRefs)
+  outputSignals <- mapM (checkConnection name) (zip expectedOutputs outputRefs)
+  pure [InstanceDeclaration (Instance name targetModule (concat inputSignals) (concat outputSignals))]
+  where
+    checkConnection connectionName (expected, ref) = do
+      signals <- resolveRef widths ref
+      unless (length signals == expected) $
+        Left ("instance " ++ connectionName ++ " port has width " ++ show (length signals)
+          ++ ", expected " ++ show expected)
+      pure signals
+
+resolveRef :: Map String Int -> Ref -> Either String [String]
+resolveRef widths ref = case Map.lookup (refBase ref) widths of
+  Nothing -> case refBits ref of
+    RefWhole -> Right [refBase ref]
+    RefBit 0 -> Right [refBase ref]
+    RefBit index ->
+      Left ("signal " ++ refBase ref ++ " has no declared width; index " ++ show index ++ " is out of range")
+    RefSlice high low
+      | high == 0 && low == 0 -> Right [refBase ref]
+      | otherwise ->
+          Left ("signal " ++ refBase ref ++ " has no declared width; slice ["
+            ++ show high ++ ":" ++ show low ++ "] is out of range")
+  Just width -> case refBits ref of
+    RefWhole -> Right (bitNames (refBase ref) width)
+    RefBit index -> do
+      checkIndex (refBase ref) width index
+      pure [bitAt (refBase ref) width index]
+    RefSlice high low -> do
+      unless (high >= 0 && low >= 0 && high < width && low < width) $
+        Left ("signal " ++ refBase ref ++ " has width " ++ show width
+          ++ "; slice [" ++ show high ++ ":" ++ show low ++ "] is out of range")
+      pure [bitAt (refBase ref) width index | index <- [low .. high]]
+
+checkIndex :: String -> Int -> Int -> Either String ()
+checkIndex base width index
+  | index >= 0 && index < width = Right ()
+  | otherwise =
+      Left ("signal " ++ base ++ " has width " ++ show width
+        ++ "; index " ++ show index ++ " is out of range")
+
+bitNames :: String -> Int -> [String]
+bitNames base width
+  | width <= 1 = [base]
+  | otherwise = [base ++ "[" ++ show index ++ "]" | index <- [0 .. width - 1]]
+
+bitAt :: String -> Int -> Int -> String
+bitAt base width index
+  | width <= 1 = base
+  | otherwise = base ++ "[" ++ show index ++ "]"
+
+componentName :: String -> Int -> Int -> String
+componentName base width index
+  | width <= 1 = base
+  | otherwise = base ++ "[" ++ show index ++ "]"
+
+parseInitValues :: Int -> Maybe String -> Either String [Logic]
+parseInitValues width initText = case initText of
+  Nothing -> Right (replicate width Low)
+  Just value -> case splitOn ',' value of
+    [single] -> maybe
+      (Left "init must be 0, 1, x, or z")
+      (Right . replicate width)
+      (parseLogic single)
+    values -> do
+      unless (length values == width) $
+        Left "init list width must match dff width"
+      mapM parseInitValue values
+  where
+    parseInitValue token = maybe
+      (Left "init must be 0, 1, x, or z")
+      Right
+      (parseLogic token)
+
+parseInt :: String -> Either String Int
+parseInt token = case reads token of
+  [(number, "")] -> Right number
+  _ -> Left "width must be an integer"
 
 validateNetlist :: Netlist -> Either String Netlist
 validateNetlist netlist = do
@@ -388,12 +645,12 @@ validateModules modules = mapM_ validateModule (Map.elems modules)
 
 validateModule :: Module -> Either String ()
 validateModule moduleDef = do
-  let ports = moduleInputs moduleDef ++ moduleOutputs moduleDef
+  let portSignals = concatMap (uncurry bitNames) (moduleInputPorts moduleDef ++ moduleOutputPorts moduleDef)
       wires = [signal | WireDeclaration signal <- moduleBody moduleDef]
       clocks = [clock | ClockDeclaration clock <- moduleBody moduleDef]
       clockSignals = map clockSignal clocks
       dffOutputs = concat [dffOutput flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
-      declared = nub (ports ++ wires ++ clockSignals ++ dffOutputs)
+      declared = nub (portSignals ++ wires ++ clockSignals ++ dffOutputs)
       driven = [gateOutput gate | GateDeclaration gate <- moduleBody moduleDef] ++ dffOutputs
       componentNames =
         [gateName gate | GateDeclaration gate <- moduleBody moduleDef]
@@ -417,15 +674,16 @@ moduleAssertions moduleDef = [assertion | AssertionDeclaration assertion <- modu
 
 checkModuleGate :: Module -> [String] -> Gate -> Either String ()
 checkModuleGate moduleDef declared gate = do
-  unless (gateOutput gate `elem` moduleWires moduleDef || gateOutput gate `elem` moduleOutputs moduleDef) $
+  let moduleWires = [signal | WireDeclaration signal <- moduleBody moduleDef]
+      moduleOutputs = concatMap (uncurry bitNames) (moduleOutputPorts moduleDef)
+  unless (gateOutput gate `elem` moduleWires || gateOutput gate `elem` moduleOutputs) $
     Left ("gate output must be declared as a wire or module output: " ++ gateOutput gate)
   mapM_ (checkKnown declared "gate input") (gateInputs gate)
-  where
-    moduleWires current = [signal | WireDeclaration signal <- moduleBody current]
 
 checkModuleFlipFlop :: Module -> [String] -> [String] -> DFlipFlop -> Either String ()
 checkModuleFlipFlop moduleDef declared clockSignals flipFlop = do
-  unless (dffClock flipFlop `elem` clockSignals || dffClock flipFlop `elem` moduleInputs moduleDef) $
+  let moduleInputs = concatMap (uncurry bitNames) (moduleInputPorts moduleDef)
+  unless (dffClock flipFlop `elem` clockSignals || dffClock flipFlop `elem` moduleInputs) $
     Left ("dff clock must be a module clock or input port: " ++ dffClock flipFlop)
   mapM_ (checkKnown declared "dff data input") (dffData flipFlop)
   mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
@@ -452,23 +710,25 @@ expandInstance parsed callerRename instancePath stack instanceDef = do
   if moduleRef `elem` stack
     then Left ("circular module instantiation: " ++ moduleRef)
     else do
-      let connectionInputs = instanceInputs instanceDef
+      let moduleInputBits = concatMap (uncurry bitNames) (moduleInputPorts moduleDef)
+          moduleOutputBits = concatMap (uncurry bitNames) (moduleOutputPorts moduleDef)
+          connectionInputs = instanceInputs instanceDef
           connectionOutputs = instanceOutputs instanceDef
-      unless (length connectionInputs == length (moduleInputs moduleDef)) $
+      unless (length connectionInputs == length moduleInputBits) $
         Left ( "instance " ++ instancePath ++ " expects "
-            ++ show (length (moduleInputs moduleDef))
+            ++ show (length moduleInputBits)
             ++ " inputs, but got "
             ++ show (length connectionInputs)
             )
-      unless (length connectionOutputs == length (moduleOutputs moduleDef)) $
+      unless (length connectionOutputs == length moduleOutputBits) $
         Left ( "instance " ++ instancePath ++ " expects "
-            ++ show (length (moduleOutputs moduleDef))
+            ++ show (length moduleOutputBits)
             ++ " outputs, but got "
             ++ show (length connectionOutputs)
             )
       let portMap = Map.fromList
-            ( zip (moduleInputs moduleDef) connectionInputs
-                ++ zip (moduleOutputs moduleDef) connectionOutputs
+            ( zip moduleInputBits connectionInputs
+                ++ zip moduleOutputBits connectionOutputs
             )
           rename signal = case Map.lookup signal portMap of
             Just external -> callerRename external
@@ -524,4 +784,3 @@ splitOn delimiter value = case break (== delimiter) value of
 
 lineError :: Int -> String -> String
 lineError lineNumber message = "line " ++ show lineNumber ++ ": " ++ message
-
