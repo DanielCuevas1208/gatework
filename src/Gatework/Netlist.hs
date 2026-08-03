@@ -10,8 +10,11 @@ module Gatework.Netlist
   , netlistSignals
   , parseNetlist
   , parseNetlistFile
+  , parseNetlistFileWithLibraries
+  , parseNetlistWithLibraries
   ) where
 
+import Control.Exception (IOException, try)
 import Control.Monad (foldM, unless)
 import Data.Char (isAlphaNum, isSpace, toUpper)
 import Data.List (foldl', nub)
@@ -130,18 +133,84 @@ emptyNetlist :: Netlist
 emptyNetlist = Netlist [] [] [] [] [] [] []
 
 parseNetlistFile :: FilePath -> IO (Either String Netlist)
-parseNetlistFile path = parseNetlist <$> readFile path
+parseNetlistFile = parseNetlistFileWithLibraries []
+
+parseNetlistFileWithLibraries :: [FilePath] -> FilePath -> IO (Either String Netlist)
+parseNetlistFileWithLibraries libraryPaths mainPath = do
+  mainOutcome <- tryReadFile mainPath
+  case mainOutcome of
+    Left _ -> pure (Left ("cannot read netlist file: " ++ mainPath))
+    Right mainSource -> do
+      libraries <- readLibraries libraryPaths
+      pure (do
+        sources <- libraries
+        parseNetlistWithLibraries sources mainSource)
+  where
+    readLibraries :: [FilePath] -> IO (Either String [(FilePath, String)])
+    readLibraries [] = pure (Right [])
+    readLibraries (path : rest) = do
+      outcome <- tryReadFile path
+      case outcome of
+        Left _ -> pure (Left ("cannot read library file: " ++ path))
+        Right content -> fmap (fmap ((path, content) :)) (readLibraries rest)
 
 parseNetlist :: String -> Either String Netlist
-parseNetlist source = do
+parseNetlist = parseNetlistWithLibraries []
+
+parseNetlistWithLibraries :: [(FilePath, String)] -> String -> Either String Netlist
+parseNetlistWithLibraries libraries source = do
+  (libraryModules, sources) <- loadLibraries libraries
   (rawModules, rawDeclarations) <- parseStatements (usefulLines source)
-  let signatureModules = signatureOnlyModules rawModules
-  modules <- mapM (resolveRawModule signatureModules) rawModules
-  validateModules modules
+  combinedModules <- foldM addMainModule libraryModules (Map.elems rawModules)
+  let signatureModules = signatureOnlyModules combinedModules
+  modules <- mapM (resolveModule sources signatureModules) combinedModules
+  validateModulesWithSources sources modules
   declarations <- resolveTopLevel signatureModules rawDeclarations
   netlist <- flattenParsed (ParsedNetlist modules declarations)
   _ <- validateNetlist netlist
   pure netlist
+
+loadLibraries :: [(FilePath, String)] -> Either String (Map String RawModule, Map String FilePath)
+loadLibraries = foldM addLibrary (Map.empty, Map.empty)
+
+addLibrary :: (Map String RawModule, Map String FilePath) -> (FilePath, String)
+  -> Either String (Map String RawModule, Map String FilePath)
+addLibrary (modules, sources) (path, content) = do
+  let libraryResult = parseStatements (usefulLines content)
+  (libraryModules, libraryDeclarations) <- case libraryResult of
+    Left message -> Left (path ++ ": " ++ message)
+    Right parsed -> Right parsed
+  unless (null libraryDeclarations) $
+    Left (path ++ ": library files may contain only module definitions")
+  foldM (insertLibraryModule path) (modules, sources) (Map.elems libraryModules)
+
+insertLibraryModule :: FilePath -> (Map String RawModule, Map String FilePath) -> RawModule
+  -> Either String (Map String RawModule, Map String FilePath)
+insertLibraryModule path (modules, sources) moduleDef
+  | Map.member name modules = Left (path ++ ": duplicate module: " ++ name)
+  | otherwise = Right (Map.insert name moduleDef modules, Map.insert name path sources)
+  where
+    name = rawModuleName moduleDef
+
+addMainModule :: Map String RawModule -> RawModule -> Either String (Map String RawModule)
+addMainModule modules moduleDef
+  | Map.member name modules = Left ("duplicate module: " ++ name)
+  | otherwise = Right (Map.insert name moduleDef modules)
+  where
+    name = rawModuleName moduleDef
+
+resolveModule :: Map String FilePath -> Map String Module -> RawModule -> Either String Module
+resolveModule sources signatureModules moduleDef =
+  case resolveRawModule signatureModules moduleDef of
+    Left message -> Left (withSource (rawModuleName moduleDef) message)
+    Right resolved -> Right resolved
+  where
+    withSource name message = case Map.lookup name sources of
+      Just path -> path ++ ": " ++ message
+      Nothing -> message
+
+tryReadFile :: FilePath -> IO (Either IOException String)
+tryReadFile path = try (readFile path)
 
 usefulLines :: String -> [(Int, String)]
 usefulLines source =
@@ -647,8 +716,16 @@ duplicates values = nub [value | value <- values, count value values > 1]
   where
     count value = length . filter (== value)
 
-validateModules :: Map String Module -> Either String ()
-validateModules modules = mapM_ validateModule (Map.elems modules)
+validateModulesWithSources :: Map String FilePath -> Map String Module -> Either String ()
+validateModulesWithSources sources modules =
+  mapM_ validateOne modules
+  where
+    validateOne moduleDef = case validateModule moduleDef of
+      Left message -> Left (withSource (moduleName moduleDef) message)
+      Right () -> Right ()
+    withSource name message = case Map.lookup name sources of
+      Just path -> path ++ ": " ++ message
+      Nothing -> message
 
 validateModule :: Module -> Either String ()
 validateModule moduleDef = do

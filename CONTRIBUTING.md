@@ -37,6 +37,8 @@ Put deterministic tests and QuickCheck properties in `test/Spec.hs`.
 
 Add a netlist fixture in `fixtures/`.
 The file name ends with `.net`.
+A demo may load module definitions with the `--library` option.
+Add the library file to `fixtures/` too.
 
 Add a golden file when you add a demo.
 The file name ends with `.golden.vcd`.

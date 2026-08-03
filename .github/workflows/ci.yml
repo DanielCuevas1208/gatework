@@ -84,6 +84,17 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/shared.net --duration 8 --output /tmp/shared.vcd --set d0=0,e0=0,d1=1,e1=0 --at 2 e0=1 --at 4 e1=1 --at 6 e0=0
       - name: Compare the shared bus demo with the golden file
         run: diff fixtures/shared.golden.vcd /tmp/shared.vcd
+      - name: Run the library adder demo
+        run: cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/adderlib.net --duration 0 --output /tmp/libadder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
+      - name: Compare the library adder demo with the golden file
+        run: diff fixtures/libadder.golden.vcd /tmp/libadder.vcd
+      - name: Confirm a missing library file stops the run
+        run: |
+          if cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/missing.net --duration 0 --output /tmp/none.vcd 2>/tmp/none.log; then
+            echo "expected the missing library to fail"
+            exit 1
+          fi
+          grep -q "cannot read library file: fixtures/missing.net" /tmp/none.log
       - name: Confirm a failed assertion stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/fail.vcd --set a=1,b=1 2>/tmp/fail.log; then
