@@ -1,0 +1,48 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.8.0.0
+$end
+$comment
+  assert y = z at 0
+  assert ny = x at 0
+  assert y = 0 at 3
+  assert ny = 1 at 3
+  assert y = x at 5
+  assert ny = x at 5
+  assert y = 1 at 7
+  assert ny = 0 at 7
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! d0 $end
+$var wire 1 " d1 $end
+$var wire 1 # e0 $end
+$var wire 1 $ e1 $end
+$var wire 1 % y $end
+$var wire 1 & ny $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+1"
+0#
+0$
+0%
+z%
+0&
+1&
+x&
+#2
+1#
+0%
+1&
+#4
+1$
+x%
+x&
+#6
+0#
+1%
+0&

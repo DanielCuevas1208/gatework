@@ -1,0 +1,25 @@
+# Shared-bus demo.
+# Two tri-state buffers drive one wire.
+# Wire resolution combines the driver values.
+# z is neutral. A low and a high conflict give x.
+input d0
+input d1
+input e0
+input e1
+output y
+output ny
+wire y
+wire ny
+
+gate TRIBUF a (d0,e0) -> y
+gate TRIBUF b (d1,e1) -> y
+gate NOT observer (y) -> ny
+
+assert y = z at 0
+assert ny = x at 0
+assert y = 0 at 3
+assert ny = 1 at 3
+assert y = x at 5
+assert ny = x at 5
+assert y = 1 at 7
+assert ny = 0 at 7

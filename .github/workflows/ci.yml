@@ -80,6 +80,10 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/bus.net --duration 3 --output /tmp/bus.vcd --set 'a[0]=1,a[2]=1,b[1]=1,b[3]=1'
       - name: Compare the bus demo with the golden file
         run: diff fixtures/bus.golden.vcd /tmp/bus.vcd
+      - name: Run the shared bus demo
+        run: cabal run gatework -- --netlist fixtures/shared.net --duration 8 --output /tmp/shared.vcd --set d0=0,e0=0,d1=1,e1=0 --at 2 e0=1 --at 4 e1=1 --at 6 e0=0
+      - name: Compare the shared bus demo with the golden file
+        run: diff fixtures/shared.golden.vcd /tmp/shared.vcd
       - name: Confirm a failed assertion stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/fail.vcd --set a=1,b=1 2>/tmp/fail.log; then

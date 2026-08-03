@@ -597,12 +597,13 @@ validateNetlist :: Netlist -> Either String Netlist
 validateNetlist netlist = do
   let clockNames = map clockSignal (netlistClocks netlist)
       dffOutputs = concatMap dffOutput (netlistFlipFlops netlist)
+      gateOutputs = map gateOutput (netlistGates netlist)
       declared = netlistInputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs
       componentNames = map gateName (netlistGates netlist) ++ map dffName (netlistFlipFlops netlist)
-      driven = map gateOutput (netlistGates netlist) ++ dffOutputs
   checkDuplicates "signal" (netlistInputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs)
   checkDuplicates "component" componentNames
-  checkDuplicates "driven signal" driven
+  checkDuplicates "flip-flop output" dffOutputs
+  checkNoGateOnDffOutput dffOutputs gateOutputs
   mapM_ (checkKnown declared "output") (netlistOutputs netlist)
   mapM_ (checkGate declared (netlistWires netlist) (netlistOutputs netlist)) (netlistGates netlist)
   mapM_ (checkFlipFlop declared clockNames) (netlistFlipFlops netlist)
@@ -625,6 +626,12 @@ checkFlipFlop declared clocks flipFlop = do
 checkKnown :: [String] -> String -> String -> Either String ()
 checkKnown declared label name =
   unless (name `elem` declared) (Left (label ++ " is not declared: " ++ name))
+
+checkNoGateOnDffOutput :: [String] -> [String] -> Either String ()
+checkNoGateOnDffOutput dffOutputs gateOutputs =
+  case [name | name <- gateOutputs, name `elem` dffOutputs] of
+    [] -> Right ()
+    name : _ -> Left ("a gate cannot drive a flip-flop output: " ++ name)
 
 checkAssertion :: [String] -> Assertion -> Either String ()
 checkAssertion known assertion =
@@ -650,15 +657,16 @@ validateModule moduleDef = do
       clocks = [clock | ClockDeclaration clock <- moduleBody moduleDef]
       clockSignals = map clockSignal clocks
       dffOutputs = concat [dffOutput flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+      gateOutputs = [gateOutput gate | GateDeclaration gate <- moduleBody moduleDef]
       declared = nub (portSignals ++ wires ++ clockSignals ++ dffOutputs)
-      driven = [gateOutput gate | GateDeclaration gate <- moduleBody moduleDef] ++ dffOutputs
       componentNames =
         [gateName gate | GateDeclaration gate <- moduleBody moduleDef]
           ++ [dffName flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
           ++ [instanceName instanceDef | InstanceDeclaration instanceDef <- moduleBody moduleDef]
   checkDuplicates "signal" declared
   checkDuplicates "component" componentNames
-  checkDuplicates "driven signal" driven
+  checkDuplicates "flip-flop output" dffOutputs
+  checkNoGateOnDffOutput dffOutputs gateOutputs
   mapM_ (checkModuleGate moduleDef declared) (moduleGates moduleDef)
   mapM_ (checkModuleFlipFlop moduleDef declared clockSignals) (moduleFlipFlops moduleDef)
   mapM_ (checkAssertion declared) (moduleAssertions moduleDef)

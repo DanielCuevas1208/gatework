@@ -1,14 +1,16 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.7.0.0
+version:            0.8.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
   flip-flops with an event-driven scheduler, and writes standard VCD
   waveform files. The simulator uses four-state logic: low, high,
   unknown, and floating. Tri-state buffers float their outputs when
-  disabled. Multi-bit buses use bracketed widths and slices. Modules
-  and instances build reusable circuits.
+  disabled. Several gates can drive one wire, and the scheduler
+  resolves the driver values into one wire value. Multi-bit buses use
+  bracketed widths and slices. Modules and instances build reusable
+  circuits.
   GTKWave and other waveform viewers can open the output.
 homepage:           https://github.com/DanielCuevas1208/gatework
 bug-reports:        https://github.com/DanielCuevas1208/gatework/issues

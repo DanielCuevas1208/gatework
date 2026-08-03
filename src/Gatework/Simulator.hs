@@ -3,6 +3,7 @@ module Gatework.Simulator
   , AssertionFailure (..)
   , Simulation (..)
   , Time
+  , resolveValue
   , signalChanges
   , simulate
   , simulateWithInputs
@@ -40,6 +41,53 @@ type EventQueue = Map Time [Pending]
 type State = Map String Logic
 type Changes = Map String [(Time, Logic)]
 
+type DriverIndexes = (Map String [Gate], Map String [Gate])
+
+resolveValue :: [Logic] -> Logic
+resolveValue values = case [value | value <- values, value /= TriState] of
+  [] -> TriState
+  known
+    | all (== Low) known -> Low
+    | all (== High) known -> High
+    | otherwise -> Undefined
+
+buildDriverIndexes :: Netlist -> DriverIndexes
+buildDriverIndexes netlist =
+  ( byOutput
+  , byInput
+  )
+  where
+    byOutput =
+      Map.fromListWith (flip (++)) [(gateOutput gate, [gate]) | gate <- netlistGates netlist]
+    byInput =
+      Map.fromListWith (flip (++))
+        [(signal, [gate]) | gate <- netlistGates netlist, signal <- gateInputs gate]
+
+affectedOutputs :: Map String [Gate] -> [String] -> [String]
+affectedOutputs byInput changedSignals =
+  nub
+    [ gateOutput gate
+    | signal <- changedSignals
+    , gate <- Map.findWithDefault [] signal byInput
+    ]
+
+resolvedOutput :: Map String [Gate] -> State -> String -> Logic
+resolvedOutput byOutput state output =
+  resolveValue
+    [evaluateGate state gate | gate <- Map.findWithDefault [] output byOutput]
+
+eventsForChanged :: Map String [Gate] -> Map String [Gate] -> State -> [String] -> [Pending]
+eventsForChanged byOutput byInput state changedSignals =
+  [ SignalEvent output (resolvedOutput byOutput state output)
+  | output <- affectedOutputs byInput changedSignals
+  ]
+
+initialDrivenEvents :: Map String [Gate] -> State -> [Pending]
+initialDrivenEvents byOutput state =
+  [ SignalEvent output (resolvedOutput byOutput state output)
+  | output <- Map.keys byOutput
+  ]
+
 simulate :: Netlist -> Time -> Either String Simulation
 simulate netlist duration = simulateWithInputs netlist [] duration
 
@@ -55,12 +103,13 @@ simulateWithScheduledInputs netlist inputOverrides scheduledInputs duration
       validateInputOverrides netlist inputOverrides
       validateScheduledInputs netlist scheduledInputs
       validateAssertionTimes netlist duration
-      let baseState = initialState netlist inputOverrides
-          initialEvents = map (initialGateEvent baseState) (netlistGates netlist)
+      let (byOutput, byInput) = buildDriverIndexes netlist
+          baseState = initialState netlist inputOverrides
+          initialEvents = initialDrivenEvents byOutput baseState
           scheduledQueue = foldl' addScheduledEvent (clockQueue netlist duration) scheduledInputs
           queue = addInitialEvents scheduledQueue initialEvents
           initialChanges = initialWaveform netlist baseState
-      result <- runQueue netlist duration queue baseState initialChanges
+      result <- runQueue netlist byOutput byInput duration queue baseState initialChanges
       let assertions = netlistAssertions netlist
       pure result
         { simulationAssertions = assertions
@@ -143,9 +192,6 @@ initialWaveform netlist state =
     | signal <- netlistSignals netlist
     ]
 
-initialGateEvent :: State -> Gate -> Pending
-initialGateEvent state gate = SignalEvent (gateOutput gate) (evaluateGate state gate)
-
 addInitialEvents :: EventQueue -> [Pending] -> EventQueue
 addInitialEvents queue events = Map.insertWith (++) 0 events queue
 
@@ -166,51 +212,54 @@ clockValue clock time =
   let halfPeriod = fromIntegral (clockPeriod clock `div` 2)
   in if odd (time `div` halfPeriod) then High else Low
 
-runQueue :: Netlist -> Time -> EventQueue -> State -> Changes -> Either String Simulation
-runQueue netlist duration queue state changes = case Map.minViewWithKey queue of
+runQueue :: Netlist -> Map String [Gate] -> Map String [Gate] -> Time -> EventQueue -> State -> Changes
+  -> Either String Simulation
+runQueue netlist byOutput byInput duration queue state changes = case Map.minViewWithKey queue of
   Nothing -> Right (Simulation duration (netlistSignals netlist) changes [] [])
   Just ((time, pending), remaining)
     | time > duration -> Right (Simulation duration (netlistSignals netlist) changes [] [])
     | otherwise -> do
         (nextQueue, nextState, nextChanges) <-
-          settleAtTime netlist duration time pending remaining state changes 0
-        runQueue netlist duration nextQueue nextState nextChanges
+          settleAtTime netlist byOutput byInput duration time pending remaining state changes 0
+        runQueue netlist byOutput byInput duration nextQueue nextState nextChanges
 
-settleAtTime :: Netlist -> Time -> Time -> [Pending] -> EventQueue -> State -> Changes -> Int
-  -> Either String (EventQueue, State, Changes)
-settleAtTime netlist duration time pending queue state changes steps
+settleAtTime :: Netlist -> Map String [Gate] -> Map String [Gate] -> Time -> Time -> [Pending]
+  -> EventQueue -> State -> Changes -> Int -> Either String (EventQueue, State, Changes)
+settleAtTime netlist byOutput byInput duration time pending queue state changes steps
   | steps > 100000 = Left ("event limit exceeded at time " ++ show time)
   | null pending = Right (queue, state, changes)
   | otherwise = case head pending of
       SignalEvent signal value ->
-        processSignalEvent netlist duration time signal value (tail pending) queue state changes steps
+        processSignalEvent netlist byOutput byInput duration time signal value (tail pending) queue state changes steps
       FlipFlopBatch samples ->
-        processFlipFlopBatch netlist duration time samples (tail pending) queue state changes steps
+        processFlipFlopBatch netlist byOutput byInput duration time samples (tail pending) queue state changes steps
 
-processSignalEvent :: Netlist -> Time -> Time -> String -> Logic -> [Pending] -> EventQueue -> State -> Changes -> Int
+processSignalEvent :: Netlist -> Map String [Gate] -> Map String [Gate] -> Time -> Time
+  -> String -> Logic -> [Pending] -> EventQueue -> State -> Changes -> Int
   -> Either String (EventQueue, State, Changes)
-processSignalEvent netlist duration time signal value pending queue state changes steps =
+processSignalEvent netlist byOutput byInput duration time signal value pending queue state changes steps =
   case Map.lookup signal state of
     Nothing -> Left ("event references an unknown signal: " ++ signal)
     Just oldValue
-      | oldValue == value -> settleAtTime netlist duration time pending queue state changes (steps + 1)
+      | oldValue == value -> settleAtTime netlist byOutput byInput duration time pending queue state changes (steps + 1)
       | otherwise ->
           let nextState = Map.insert signal value state
               nextChanges = recordChange time signal value changes
-              gateEvents = gatesForSignals netlist [signal] nextState
+              gateEvents = eventsForChanged byOutput byInput nextState [signal]
               flipFlopEvents =
                 if oldValue == Low && value == High
                   then [FlipFlopBatch (edgeSamples netlist signal nextState)]
                   else []
-          in settleAtTime netlist duration time (pending ++ flipFlopEvents ++ gateEvents)
+          in settleAtTime netlist byOutput byInput duration time (pending ++ flipFlopEvents ++ gateEvents)
                queue nextState nextChanges (steps + 1)
 
-processFlipFlopBatch :: Netlist -> Time -> Time -> [(DFlipFlop, Int, Logic)] -> [Pending] -> EventQueue -> State -> Changes -> Int
+processFlipFlopBatch :: Netlist -> Map String [Gate] -> Map String [Gate] -> Time -> Time
+  -> [(DFlipFlop, Int, Logic)] -> [Pending] -> EventQueue -> State -> Changes -> Int
   -> Either String (EventQueue, State, Changes)
-processFlipFlopBatch netlist duration time samples pending queue state changes steps =
+processFlipFlopBatch netlist byOutput byInput duration time samples pending queue state changes steps =
   let (nextState, nextChanges, changedOutputs) = foldl' applySample (state, changes, []) samples
-      gateEvents = gatesForSignals netlist changedOutputs nextState
-  in settleAtTime netlist duration time (pending ++ gateEvents)
+      gateEvents = eventsForChanged byOutput byInput nextState changedOutputs
+  in settleAtTime netlist byOutput byInput duration time (pending ++ gateEvents)
        queue nextState nextChanges (steps + 1)
   where
     applySample (currentState, currentChanges, changed) (flipFlop, index, value) =
@@ -256,13 +305,6 @@ dffSampleValue flipFlop index state
 
 dffWidth :: DFlipFlop -> Int
 dffWidth flipFlop = length (dffData flipFlop)
-
-gatesForSignals :: Netlist -> [String] -> State -> [Pending]
-gatesForSignals netlist changedSignals state =
-  [ SignalEvent (gateOutput gate) (evaluateGate state gate)
-  | gate <- netlistGates netlist
-  , any (`elem` gateInputs gate) changedSignals
-  ]
 
 evaluateGate :: State -> Gate -> Logic
 evaluateGate state gate =

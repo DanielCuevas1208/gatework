@@ -10,6 +10,7 @@ import Gatework.Simulator
   ( AssertionFailure (..)
   , Simulation
   , Time
+  , resolveValue
   , signalChanges
   , simulate
   , simulateWithInputs
@@ -123,6 +124,12 @@ main = do
       putStrLn ("unknown fixture failed to parse: " ++ message)
       exitFailure
     Right netlist -> pure netlist
+  sharedSource <- readFile "fixtures/shared.net"
+  shared <- case parseNetlist sharedSource of
+    Left message -> do
+      putStrLn ("shared fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
   deterministic <- sequence
     [ testParser
     , testParserAcceptsCommentsAndBlankLines
@@ -132,7 +139,10 @@ main = do
     , testParserRejectsUndeclaredInput
     , testParserRejectsGateOutputWithoutWire
     , testParserRejectsDuplicateSignal
-    , testParserRejectsDuplicateDrivenSignal
+    , testMultiDriverResolution
+    , testMultiDriverSettlesOnSchedule
+    , testParserRejectsDuplicateDffOutput
+    , testParserRejectsGateOnDffOutput
     , testParserRejectsInvalidClockPeriod
     , testParserRejectsInvalidIdentifier
     , testParserRejectsInvalidFlipFlop
@@ -218,6 +228,8 @@ main = do
     , testParserRejectsBusConflictingWidths
     , testParserRejectsBusInstancePortMismatch
     , testGoldenBusVCD
+    , testSharedBusFixture
+    , testGoldenSharedVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -260,6 +272,7 @@ main = do
     , ("bus XOR matches the bitwise reference", quickCheckResult propBusXorBitwise)
     , ("bus register samples every bit", quickCheckResult propBusRegisterSampling)
     , ("bus module matches the flat circuit", quickCheckResult propBusModuleMatchesFlat)
+    , ("shared bus follows the resolution model", quickCheckResult (propSharedBusResolution shared))
     ]
     $ \(label, action) -> do
       result <- action
@@ -317,10 +330,76 @@ testParserRejectsDuplicateSignal =
   check "parser rejects duplicate signal names" $ isLeft $
     parseNetlist "input a\nwire a"
 
-testParserRejectsDuplicateDrivenSignal :: IO Bool
-testParserRejectsDuplicateDrivenSignal =
-  check "parser rejects duplicate driven signals" $ isLeft $
-    parseNetlist "input x\nwire y\ngate NOT first (x) -> y\ngate NOT second (x) -> y"
+testMultiDriverResolution :: IO Bool
+testMultiDriverResolution = case
+  parseNetlist (unlines
+    [ "input a"
+    , "input b"
+    , "input en"
+    , "output y"
+    , "wire y"
+    , "gate AND first (a,en) -> y"
+    , "gate OR second (b,en) -> y"
+    ]) of
+    Left _ -> check "many gate drivers resolve to one wire value" False
+    Right netlist ->
+      check "many gate drivers resolve to one wire value" $ case
+        ( simulateWithInputs netlist [("a", High), ("b", Low), ("en", High)] 0
+        , simulateWithInputs netlist [("a", Low), ("b", Low), ("en", Low)] 0
+        , simulateWithInputs netlist [("a", High), ("b", High), ("en", Low)] 0
+        ) of
+          (Right bothHigh, Right bothLow, Right conflict) ->
+            finalValue bothHigh "y" == Just High
+              && finalValue bothLow "y" == Just Low
+              && finalValue conflict "y" == Just Undefined
+          _ -> False
+
+testMultiDriverSettlesOnSchedule :: IO Bool
+testMultiDriverSettlesOnSchedule = case
+  parseNetlist (unlines
+    [ "input d0"
+    , "input d1"
+    , "input e0"
+    , "input e1"
+    , "output y"
+    , "wire y"
+    , "gate TRIBUF a (d0,e0) -> y"
+    , "gate TRIBUF b (d1,e1) -> y"
+    ]) of
+    Left _ -> check "scheduled driver changes re-resolve the wire" False
+    Right netlist -> check "scheduled driver changes re-resolve the wire" $ case
+      simulateWithScheduledInputs netlist [("d0", Low), ("d1", High)]
+        [(2, "e0", High), (4, "e1", High), (6, "e0", Low)] 8 of
+        Right simulation ->
+          valueAt simulation "y" 0 == TriState
+            && valueAt simulation "y" 3 == Low
+            && valueAt simulation "y" 5 == Undefined
+            && valueAt simulation "y" 7 == High
+        Left _ -> False
+
+testParserRejectsDuplicateDffOutput :: IO Bool
+testParserRejectsDuplicateDffOutput =
+  check "parser rejects two flip-flops on one output" $ isLeft $
+    parseNetlist (unlines
+      [ "input d0"
+      , "input d1"
+      , "output q"
+      , "clock clk period=2"
+      , "dff first clock=clk d=d0 q=q init=0"
+      , "dff second clock=clk d=d1 q=q init=0"
+      ])
+
+testParserRejectsGateOnDffOutput :: IO Bool
+testParserRejectsGateOnDffOutput =
+  check "parser rejects a gate on a flip-flop output" $ isLeft $
+    parseNetlist (unlines
+      [ "input d"
+      , "input en"
+      , "output q"
+      , "clock clk period=2"
+      , "dff state clock=clk d=d q=q init=0"
+      , "gate TRIBUF driver (d,en) -> q"
+      ])
 
 testParserRejectsInvalidClockPeriod :: IO Bool
 testParserRejectsInvalidClockPeriod =
@@ -1452,6 +1531,38 @@ testGoldenBusVCD = do
         pure (renderVCD simulation)
   check "bus VCD matches golden file" (actual == Right golden)
 
+testSharedBusFixture :: IO Bool
+testSharedBusFixture = do
+  source <- readFile "fixtures/shared.net"
+  case parseNetlist source of
+    Left _ -> check "shared bus fixture simulates the wire" False
+    Right netlist -> check "shared bus fixture simulates the wire" $ case
+      simulateWithScheduledInputs netlist [("d0", Low), ("d1", High)]
+        [(2, "e0", High), (4, "e1", High), (6, "e0", Low)] 8 of
+        Right simulation ->
+          valueAt simulation "y" 0 == TriState
+            && valueAt simulation "ny" 0 == Undefined
+            && valueAt simulation "y" 3 == Low
+            && valueAt simulation "ny" 3 == High
+            && valueAt simulation "y" 5 == Undefined
+            && valueAt simulation "ny" 5 == Undefined
+            && valueAt simulation "y" 7 == High
+            && valueAt simulation "ny" 7 == Low
+            && null (simulationFailures simulation)
+        Left _ -> False
+
+testGoldenSharedVCD :: IO Bool
+testGoldenSharedVCD = do
+  source <- readFile "fixtures/shared.net"
+  golden <- readFile "fixtures/shared.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("d0", Low), ("d1", High)]
+            [(2, "e0", High), (4, "e1", High), (6, "e0", Low)] 8
+        pure (renderVCD simulation)
+  check "shared bus VCD matches golden file" (actual == Right golden)
+
 evalTwoState :: GateType -> [Logic] -> Logic
 evalTwoState And inputs = if all (== High) inputs then High else Low
 evalTwoState Or inputs = if any (== High) inputs then High else Low
@@ -1639,6 +1750,35 @@ propBusModuleMatchesFlat =
         , "n[0]", "n[1]", "n[2]", "n[3]"
         , "q[0]", "q[1]", "q[2]", "q[3]"
         ]
+
+propSharedBusResolution :: Netlist -> Property
+propSharedBusResolution netlist =
+  forAll (choose (0, 6)) $ \count ->
+    forAll (vector (4 * count)) $ \bits ->
+      let d0s = take count bits
+          d1s = take count (drop count bits)
+          e0s = take count (drop (2 * count) bits)
+          e1s = take count (drop (3 * count) bits)
+          times = [1 :: Int .. count]
+          transitions = concat
+            [ [(2 * fromIntegral k, name, boolToLogic value) | (k, value) <- zip times values]
+            | (name, values) <- [("d0", d0s), ("d1", d1s), ("e0", e0s), ("e1", e1s)]
+            ]
+          duration = 2 * fromIntegral count + 1
+      in case simulateWithScheduledInputs netlist {netlistAssertions = []} [] transitions duration of
+        Left _ -> property False
+        Right simulation ->
+          property (all (sampleMatches simulation) [0 .. duration])
+  where
+    sampleMatches simulation time =
+      let contribution dataValue enable = if enable == High then dataValue else TriState
+          expectedY = resolveValue
+            [ contribution (valueAt simulation "d0" time) (valueAt simulation "e0" time)
+            , contribution (valueAt simulation "d1" time) (valueAt simulation "e1" time)
+            ]
+          expectedNy = evalGate Not [expectedY]
+      in valueAt simulation "y" time == expectedY
+          && valueAt simulation "ny" time == expectedNy
 
 propNandInvertsAnd :: Logical -> Logical -> Bool
 propNandInvertsAnd (Logical left) (Logical right) =
