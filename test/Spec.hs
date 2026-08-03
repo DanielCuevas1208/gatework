@@ -2,8 +2,8 @@ module Main (main) where
 
 import Control.Monad (forM)
 import Data.Either (isLeft)
-import Data.List (sortOn)
-import Gatework.Logic (GateType (..), Logic (..), evalGate)
+import Data.List (foldl', sortOn)
+import Gatework.Logic (GateType (..), Logic (..), evalGate, parseLogic)
 import Gatework.Netlist (Assertion (..), Netlist (..), netlistAssertions, netlistSignals, parseNetlist)
 import Gatework.Simulator
   ( AssertionFailure (..)
@@ -35,6 +35,18 @@ newtype Logical = Logical Logic
 
 instance Arbitrary Logical where
   arbitrary = Logical <$> elements [Low, High]
+
+newtype Known = Known Logic
+  deriving (Eq, Show)
+
+instance Arbitrary Known where
+  arbitrary = Known <$> elements [Low, High]
+
+newtype FourState = FourState Logic
+  deriving (Eq, Show)
+
+instance Arbitrary FourState where
+  arbitrary = FourState <$> elements [Low, High, Undefined, TriState]
 
 and2 :: Logic -> Logic -> Logic
 and2 left right = evalGate And [left, right]
@@ -96,6 +108,18 @@ main = do
   hcounter <- case parseNetlist hcounterSource of
     Left message -> do
       putStrLn ("hcounter fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
+  tristateSource <- readFile "fixtures/tristate.net"
+  tristate <- case parseNetlist tristateSource of
+    Left message -> do
+      putStrLn ("tristate fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
+  unknownSource <- readFile "fixtures/unknown.net"
+  unknown <- case parseNetlist unknownSource of
+    Left message -> do
+      putStrLn ("unknown fixture failed to parse: " ++ message)
       exitFailure
     Right netlist -> pure netlist
   deterministic <- sequence
@@ -165,6 +189,18 @@ main = do
     , testGoldenHaddaderVCD
     , testGoldenHcounterVCD
     , testGoldenAdderVCD
+    , testLogicParseFourState
+    , testUndefinedPropagatesThroughGates
+    , testTriStateReadsAsUnknown
+    , testTribufTruth
+    , testDffInitUndefined
+    , testScheduledInputWithTriState
+    , testParserAcceptsFourStateAssertion
+    , testVCDRendersUndefinedAndTriState
+    , testTribufFixture
+    , testUndefinedFixture
+    , testGoldenTribufVCD
+    , testGoldenUnknownVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -198,6 +234,12 @@ main = do
     , ("hierarchical adder matches the flat adder", quickCheckResult (propHierarchicalAdderMatchesFlat adder haddader))
     , ("hierarchical counter matches the flat counter", quickCheckResult (propHierarchicalCounterMatchesFlat counter hcounter))
     , ("gates fixture follows the gate truth tables", quickCheckResult (propGatesFixture gates))
+    , ("four-state gates match the two-state reference", quickCheckResult propTwoStateMatchesReference)
+    , ("undefined inputs commute in binary gates", quickCheckResult propUndefinedCommutative)
+    , ("TRIBUF follows its truth table", quickCheckResult propTribufTruth)
+    , ("an enabled buffer passes known data", quickCheckResult propTribufEnable)
+    , ("tri-state fixture stays consistent", quickCheckResult (propTribufFixtureSound tristate))
+    , ("unknown fixture starts unclocked", quickCheckResult (propUnknownFixtureSampling unknown))
     ]
     $ \(label, action) -> do
       result <- action
@@ -992,6 +1034,253 @@ testGoldenAdderVCD = do
         pure (renderVCD simulation)
   check "adder VCD matches golden file" (actual == Right golden)
 
+testLogicParseFourState :: IO Bool
+testLogicParseFourState =
+  check "parser maps x and z to unknown and floating" $
+    parseLogic "0" == Just Low
+      && parseLogic "1" == Just High
+      && parseLogic "x" == Just Undefined
+      && parseLogic "z" == Just TriState
+      && parseLogic "X" == Just Undefined
+      && parseLogic "Z" == Just TriState
+      && parseLogic "2" == Nothing
+
+testUndefinedPropagatesThroughGates :: IO Bool
+testUndefinedPropagatesThroughGates =
+  check "undefined propagates through gates" $
+    evalGate Not [Undefined] == Undefined
+      && evalGate And [Undefined, High] == Undefined
+      && evalGate And [Undefined, Low] == Low
+      && evalGate Or [Undefined, High] == High
+      && evalGate Or [Undefined, Low] == Undefined
+      && evalGate Xor [Undefined, High] == Undefined
+      && evalGate Nand [Undefined, Low] == High
+      && evalGate Nor [Undefined, High] == Low
+      && evalGate Xnor [Undefined, High] == Undefined
+
+testTriStateReadsAsUnknown :: IO Bool
+testTriStateReadsAsUnknown =
+  check "gates read a floating input as unknown" $
+    evalGate Not [TriState] == Undefined
+      && evalGate And [TriState, High] == Undefined
+      && evalGate Or [TriState, High] == High
+      && evalGate And [TriState, Low] == Low
+      && evalGate Xor [TriState, High] == Undefined
+
+testTribufTruth :: IO Bool
+testTribufTruth =
+  check "TRIBUF follows its truth table" $
+    evalGate Tribuf [Low, Low] == TriState
+      && evalGate Tribuf [High, Low] == TriState
+      && evalGate Tribuf [Low, High] == Low
+      && evalGate Tribuf [High, High] == High
+      && evalGate Tribuf [Low, Undefined] == Undefined
+      && evalGate Tribuf [Low, TriState] == Undefined
+      && evalGate Tribuf [TriState, High] == Undefined
+      && evalGate Tribuf [High, High] == High
+
+testDffInitUndefined :: IO Bool
+testDffInitUndefined =
+  let netlist = parseNetlist "input d\noutput q\nclock clk period=4\ndff f clock=clk d=d q=q init=x"
+  in case netlist of
+    Left _ -> check "dff init=x shows unknown until clocked" False
+    Right parsed -> check "dff init=x shows unknown until clocked" $ case
+      simulateWithInputs parsed [("d", High)] 4 of
+        Right simulation -> signalChanges simulation "q" == [(0, Undefined), (2, High)]
+        Left _ -> False
+
+testScheduledInputWithTriState :: IO Bool
+testScheduledInputWithTriState =
+  let netlist = parseNetlist "input en\nwire y\noutput y\ngate NOT inv (en) -> y"
+  in case netlist of
+    Left _ -> check "scheduled tri-state input is recorded" False
+    Right parsed -> check "scheduled tri-state input is recorded" $ case
+      simulateWithScheduledInputs parsed [] [(2, "en", TriState)] 4 of
+        Right simulation ->
+          valueAt simulation "en" 2 == TriState
+            && valueAt simulation "y" 2 == Undefined
+        Left _ -> False
+
+testParserAcceptsFourStateAssertion :: IO Bool
+testParserAcceptsFourStateAssertion =
+  check "parser accepts x and z assertion values" $ case
+    parseNetlist
+      "input en\nwire y\noutput y\ngate TRIBUF driver (en,en) -> y\nassert y = z at 0\nassert y = x at 2\n"
+      of
+      Right netlist ->
+        netlistAssertions netlist
+          == [Assertion "y" TriState 0, Assertion "y" Undefined 2]
+      Left _ -> False
+
+testVCDRendersUndefinedAndTriState :: IO Bool
+testVCDRendersUndefinedAndTriState = case
+  parseNetlist (unlines
+    [ "input en"
+    , "wire y"
+    , "wire ny"
+    , "output y"
+    , "output ny"
+    , "gate TRIBUF driver (en,en) -> y"
+    , "gate NOT observer (y) -> ny"
+    ]) of
+    Left _ -> check "VCD renders x and z values" False
+    Right netlist -> check "VCD renders x and z values" $ case
+      simulateWithInputs netlist [("en", Low)] 3 of
+        Right simulation ->
+          let text = renderVCD simulation
+          in any (startsWith 'z') (lines text)
+               && any (startsWith 'x') (lines text)
+        Left _ -> False
+  where
+    startsWith character line = not (null line) && head line == character
+
+testTribufFixture :: IO Bool
+testTribufFixture = do
+  source <- readFile "fixtures/tristate.net"
+  case parseNetlist source of
+    Left _ -> check "tri-state fixture simulates the buffer" False
+    Right netlist -> check "tri-state fixture simulates the buffer" $ case
+      simulateWithScheduledInputs netlist [("d", Low), ("en", Low)]
+        [(2, "en", High), (4, "d", High), (6, "en", Low)] 8 of
+        Right simulation ->
+          valueAt simulation "y" 0 == TriState
+            && valueAt simulation "y" 3 == Low
+            && valueAt simulation "y" 5 == High
+            && valueAt simulation "y" 7 == TriState
+            && valueAt simulation "nz" 0 == Undefined
+            && valueAt simulation "nz" 3 == High
+            && valueAt simulation "nz" 5 == Low
+            && valueAt simulation "nz" 7 == Undefined
+            && null (simulationFailures simulation)
+        Left _ -> False
+
+testUndefinedFixture :: IO Bool
+testUndefinedFixture = do
+  source <- readFile "fixtures/unknown.net"
+  case parseNetlist source of
+    Left _ -> check "undefined fixture simulates the register" False
+    Right netlist -> check "undefined fixture simulates the register" $ case
+      simulateWithScheduledInputs netlist [("d", High)] [(4, "d", Low)] 8 of
+        Right simulation ->
+          valueAt simulation "q" 0 == Undefined
+            && valueAt simulation "nq" 0 == Undefined
+            && valueAt simulation "q" 3 == High
+            && valueAt simulation "nq" 3 == Low
+            && valueAt simulation "q" 5 == Low
+            && valueAt simulation "nq" 5 == High
+            && null (simulationFailures simulation)
+        Left _ -> False
+
+testGoldenTribufVCD :: IO Bool
+testGoldenTribufVCD = do
+  source <- readFile "fixtures/tristate.net"
+  golden <- readFile "fixtures/tristate.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("d", Low), ("en", Low)]
+            [(2, "en", High), (4, "d", High), (6, "en", Low)] 8
+        pure (renderVCD simulation)
+  check "tri-state VCD matches golden file" (actual == Right golden)
+
+testGoldenUnknownVCD :: IO Bool
+testGoldenUnknownVCD = do
+  source <- readFile "fixtures/unknown.net"
+  golden <- readFile "fixtures/unknown.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("d", High)] [(4, "d", Low)] 8
+        pure (renderVCD simulation)
+  check "undefined VCD matches golden file" (actual == Right golden)
+
+evalTwoState :: GateType -> [Logic] -> Logic
+evalTwoState And inputs = if all (== High) inputs then High else Low
+evalTwoState Or inputs = if any (== High) inputs then High else Low
+evalTwoState Xor inputs = foldl' xorTwo Low inputs
+evalTwoState Nand inputs = if all (== High) inputs then Low else High
+evalTwoState Nor inputs = if any (== High) inputs then Low else High
+evalTwoState Xnor inputs = invertTwo (foldl' xorTwo Low inputs)
+evalTwoState Not inputs = case inputs of
+  input : _ -> invertTwo input
+  [] -> Low
+evalTwoState Tribuf _ = Low
+
+xorTwo :: Logic -> Logic -> Logic
+xorTwo Low High = High
+xorTwo High Low = High
+xorTwo _ _ = Low
+
+invertTwo :: Logic -> Logic
+invertTwo High = Low
+invertTwo _ = High
+
+propTwoStateMatchesReference :: Known -> Known -> Bool
+propTwoStateMatchesReference (Known left) (Known right) =
+  and
+    [ evalGate And [left, right] == evalTwoState And [left, right]
+    , evalGate Or [left, right] == evalTwoState Or [left, right]
+    , evalGate Xor [left, right] == evalTwoState Xor [left, right]
+    , evalGate Nand [left, right] == evalTwoState Nand [left, right]
+    , evalGate Nor [left, right] == evalTwoState Nor [left, right]
+    , evalGate Xnor [left, right] == evalTwoState Xnor [left, right]
+    , evalGate Not [left] == evalTwoState Not [left]
+    ]
+
+propUndefinedCommutative :: Known -> Bool
+propUndefinedCommutative (Known value) =
+  and
+    [ evalGate And [Undefined, value] == evalGate And [value, Undefined]
+    , evalGate Or [Undefined, value] == evalGate Or [value, Undefined]
+    , evalGate Xor [Undefined, value] == evalGate Xor [value, Undefined]
+    , evalGate Nand [Undefined, value] == evalGate Nand [value, Undefined]
+    , evalGate Nor [Undefined, value] == evalGate Nor [value, Undefined]
+    , evalGate Xnor [Undefined, value] == evalGate Xnor [value, Undefined]
+    ]
+
+propTribufTruth :: FourState -> FourState -> Bool
+propTribufTruth (FourState dataValue) (FourState enable) =
+  evalGate Tribuf [dataValue, enable] == expected
+  where
+    expected = case enable of
+      Low -> TriState
+      High -> case dataValue of
+        TriState -> Undefined
+        _ -> dataValue
+      _ -> Undefined
+
+propTribufEnable :: Known -> Bool
+propTribufEnable (Known dataValue) =
+  evalGate Tribuf [dataValue, Low] == TriState
+    && evalGate Tribuf [dataValue, High] == dataValue
+
+propTribufFixtureSound :: Netlist -> Property
+propTribufFixtureSound netlist =
+  forAll (elements [Low, High]) $ \dataValue ->
+    forAll (elements [Low, High]) $ \enable ->
+      let expectedY = if enable == Low then TriState else dataValue
+          expectedNz = if enable == Low then Undefined else invertTwo dataValue
+      in case simulateWithInputs netlist [("d", dataValue), ("en", enable)] 8 of
+        Right simulation ->
+          property
+            ( valueAt simulation "y" 0 == expectedY
+                && valueAt simulation "nz" 0 == expectedNz
+            )
+        Left _ -> property False
+
+propUnknownFixtureSampling :: Netlist -> Property
+propUnknownFixtureSampling netlist =
+  forAll (elements [Low, High]) $ \dataValue ->
+    case simulateWithInputs netlist [("d", dataValue)] 8 of
+      Right simulation ->
+        property
+          ( valueAt simulation "q" 0 == Undefined
+              && valueAt simulation "q" 3 == dataValue
+              && valueAt simulation "nq" 0 == Undefined
+              && valueAt simulation "nq" 3 == invertTwo dataValue
+          )
+      Left _ -> property False
+
 propNandInvertsAnd :: Logical -> Logical -> Bool
 propNandInvertsAnd (Logical left) (Logical right) =
   evalGate Nand [left, right] == not1 (and2 left right)
@@ -1049,7 +1338,6 @@ propGatesFixture netlist =
 propAndCommutative :: Logical -> Logical -> Bool
 propAndCommutative (Logical left) (Logical right) =
   and2 left right == and2 right left
-
 propOrCommutative :: Logical -> Logical -> Bool
 propOrCommutative (Logical left) (Logical right) =
   or2 left right == or2 right left

@@ -1,0 +1,21 @@
+# Tri-state buffer demo.
+# A disabled driver floats its output to z.
+# A gate reads a floating input as unknown (x).
+input d
+input en
+output y
+output nz
+wire y
+wire nz
+
+gate TRIBUF driver (d,en) -> y
+gate NOT observer (y) -> nz
+
+assert y = z at 0
+assert nz = x at 0
+assert y = 0 at 3
+assert nz = 1 at 3
+assert y = 1 at 5
+assert nz = 0 at 5
+assert y = z at 7
+assert nz = x at 7

@@ -101,8 +101,8 @@ parseAssignments value = mapM parseAssignment (splitOn ',' value)
     parseAssignment assignment = case break (== '=') assignment of
       (name, '=' : rawLogic) | not (null name) -> case parseLogic rawLogic of
         Just logic -> Right (name, logic)
-        Nothing -> Left ("input value must be 0 or 1: " ++ assignment)
-      _ -> Left ("input assignment must use signal=0 or signal=1: " ++ assignment)
+        Nothing -> Left ("input value must be 0, 1, x, or z: " ++ assignment)
+      _ -> Left ("input assignment must use signal=0, signal=1, signal=x, or signal=z: " ++ assignment)
 
 splitOn :: Char -> String -> [String]
 splitOn delimiter value = case break (== delimiter) value of
@@ -117,10 +117,11 @@ failWith message = do
 
 usage :: String
 usage = intercalate "\n"
-  [ "gatework --netlist FILE [--duration N] [--output FILE] [--set signal=0,signal=1] [--at TIME signal=0,signal=1]"
+  [ "gatework --netlist FILE [--duration N] [--output FILE] [--set signal=0,signal=1,signal=x,signal=z] [--at TIME signal=0,signal=1,signal=x,signal=z]"
   , ""
   , "Simulate a netlist and write a VCD waveform."
   , "Use --at to change input signals at a fixed time during the run."
+  , "Use x for an unknown value and z for a floating value."
   , "Check assert declarations in the netlist against the waveform."
   ]
 

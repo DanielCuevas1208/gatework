@@ -3,6 +3,7 @@
 Gatework is an event-driven digital logic simulator in Haskell.
 It parses a plain-text netlist, runs the circuit, and writes a VCD waveform file.
 GTKWave and other waveform viewers can open the output.
+The simulator uses four logic values: low, high, unknown, and floating.
 
 ## Value
 
@@ -23,6 +24,10 @@ You can do these tasks:
 - Compare the counter waveform with a repository golden file.
 - Check netlist behavior with waveform assertions.
 - Inspect assertion metadata inside the VCD file.
+- Use unknown (x) and floating (z) logic values.
+- Drive a tri-state buffer from data and enable inputs.
+- See an uninitialized flip-flop read as unknown.
+- Watch a gate read a floating input as unknown.
 
 ## Architecture
 
@@ -301,6 +306,60 @@ assertion failed: out must be 1 at time 2, but was 0
 The run still writes the VCD file.
 Use the file to inspect the waveform after the failure.
 
+## Tri-state buffer demo
+
+Run a tri-state buffer with a scheduled enable.
+
+```powershell
+cabal run gatework -- --netlist fixtures/tristate.net --duration 8 --output tristate.vcd --set d=0,en=0 --at 2 en=1 --at 4 d=1 --at 6 en=0
+```
+
+The command writes this output:
+
+```text
+Wrote tristate.vcd
+Signals: 4
+Duration: 8 time units
+Assertions: 8 passed
+```
+
+The gate `TRIBUF` drives `y` only while `en` is high.
+When `en` is low, `y` floats to `z`.
+The gate `NOT` reads a floating input as unknown.
+
+| Time | d | en | y | nz |
+| --- | --- | --- | --- | --- |
+| 0 | 0 | 0 | z | x |
+| 3 | 0 | 1 | 0 | 1 |
+| 5 | 1 | 1 | 1 | 0 |
+| 7 | 1 | 0 | z | x |
+
+## Undefined state demo
+
+Run a flip-flop with an unknown initial value.
+
+```powershell
+cabal run gatework -- --netlist fixtures/unknown.net --duration 8 --output unknown.vcd --set d=1 --at 4 d=0
+```
+
+The command writes this output:
+
+```text
+Wrote unknown.vcd
+Signals: 4
+Duration: 8 time units
+Assertions: 6 passed
+```
+
+The `init=x` field keeps the output unknown until the first clock edge.
+The `NOT` gate shows the unknown until the flip-flop samples data.
+
+| Time | d | q | nq |
+| --- | --- | --- | --- |
+| 0 | 1 | x | x |
+| 3 | 1 | 1 | 0 |
+| 5 | 0 | 0 | 1 |
+
 ## Sample output
 
 The file `fixtures/counter.golden.vcd` holds the complete counter waveform.
@@ -373,6 +432,40 @@ $comment
 $end
 ```
 
+The file `fixtures/tristate.golden.vcd` holds the tri-state demo waveform.
+Its timeline uses `z` for a floating wire and `x` for a floating value read by a gate:
+
+```text
+#0
+0!
+0"
+0#
+z#
+0$
+1$
+x$
+#2
+1"
+0#
+1$
+```
+
+The file `fixtures/unknown.golden.vcd` holds the undefined-state demo waveform.
+Its timeline shows `x` on the register output before the first clock edge:
+
+```text
+#0
+1!
+x"
+0#
+x#
+0$
+#1
+1"
+0#
+1$
+```
+
 ## Netlist format
 
 Use one declaration per line.
@@ -391,13 +484,34 @@ gate AND combine (n,b) -> y
 dff state clock=clk d=a q=state_q init=0
 ```
 
-Supported gates are AND, OR, XOR, NAND, NOR, XNOR, and NOT.
+Supported gates are AND, OR, XOR, NAND, NOR, XNOR, NOT, and TRIBUF.
 NAND, NOR, and XNOR use two inputs.
 A gate output must have a `wire` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
+
+The `TRIBUF` gate is a tri-state buffer.
+Its first input is the data signal.
+Its second input is the enable signal.
+A low enable makes the output float to `z`.
+A high enable drives the output from the data input.
+A gate reads a `z` input as unknown.
+
+```text
+gate TRIBUF driver (d,en) -> y
+```
+
+Logic values use the VCD characters `0`, `1`, `x`, and `z`.
+The value `x` means unknown.
+The value `z` means floating.
+Input assignments, init lists, and assertions accept all four values.
+
+```text
+dff reg clock=clk d=d q=q init=x
+assert y = z at 0
+```
 
 Use comma-separated lists to build a wider flip-flop.
 The lists for `d=` and `q=` must have equal length.
@@ -415,7 +529,7 @@ An asserted reset forces every bit to its initial value.
 
 Use `assert` to check a signal value at a fixed time.
 The time must be a non-negative integer.
-The value must be 0 or 1.
+The value must be 0, 1, x, or z.
 The signal must exist in the netlist.
 
 ```text
@@ -467,8 +581,10 @@ An instance that names a missing module is an error.
 The test suite has two parts.
 Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, reset behavior, register width, assertions, and golden VCD output.
 Deterministic tests also cover NAND, NOR, and XNOR truth tables, module flattening, nested instances, port validation, and circular instantiation.
+Deterministic tests also cover undefined and floating values, tri-state buffers, and their golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
+QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -479,20 +595,25 @@ The width property compares each register bit with a per-bit reference model.
 The entry-point property shows that both simulation entry points produce identical output.
 The assertion property shows that real values pass and inverted values fail.
 The hierarchy property shows that the hierarchical circuits match the flat circuits.
+The four-state property shows that the gates keep their two-state behavior for known inputs.
+The buffer properties show that an enabled buffer passes data and a disabled buffer floats.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, and adder VCD text.
+Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, adder, tri-state, and undefined-state VCD text.
 CI runs every demo and compares its output with the golden file.
 
 ## Limitations
 
-The simulator uses two-state logic: low and high.
+The simulator uses four logic values: low, high, unknown, and floating.
+A floating value reads as unknown inside a gate.
+One gate drives one wire.
+The simulator does not resolve two drivers on the same wire.
 Combinational loops stop with an event-limit error.
 All gates use zero delay.
-Zero-delay gates can show combinational settling transients at clock edges.
+Zero-delay gates can show combinational settling transients at clock edges and at time zero.
 Input changes apply only at scheduled times.
 They do not react to circuit state.
 VCD output uses one module scope and one-bit signals.
@@ -509,6 +630,7 @@ The dotted instance names are part of the VCD signal names.
 
 ## Roadmap
 
+Release 0.6.0.0 completed undefined and floating logic values and tri-state buffers.
 Release 0.5.0.0 completed universal gates and hierarchical netlists.
 Release 0.4.0.0 completed waveform assertions and VCD comment metadata.
 Release 0.3.0.0 completed reset pins and parameterized flip-flops.
@@ -516,8 +638,8 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add tri-state and undefined logic values.
-2. Add multi-bit vectors and bus syntax.
+1. Add multi-bit vectors and bus syntax.
+2. Add multi-driver bus resolution.
 3. Add module definitions in separate files.
 4. Add a waveform report command.
 
