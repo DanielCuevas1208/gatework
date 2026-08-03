@@ -5,6 +5,26 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.8.0.0] - 2026-08-03
+
+### Added
+
+- Allow several gates to drive one wire.
+- Resolve many driver values into one wire value.
+- A floating (z) contribution is neutral during resolution.
+- Known driver values dominate floating contributions.
+- A low and a high together resolve to unknown (x).
+- Any unknown contribution resolves to unknown.
+- Two disabled tri-state buffers float the shared wire.
+- Add a shared-bus demo fixture and a golden waveform.
+- Add deterministic tests and a QuickCheck property for wire resolution.
+
+### Changed
+
+- The scheduler emits one resolved event per driven wire.
+- A flip-flop output stays exclusive to its flip-flop.
+- A gate cannot drive a flip-flop output.
+
 ## [0.7.0.0] - 2026-08-03
 
 ### Added

@@ -27,6 +27,8 @@ You can do these tasks:
 - Inspect assertion metadata inside the VCD file.
 - Use unknown (x) and floating (z) logic values.
 - Drive a tri-state buffer from data and enable inputs.
+- Share one wire between two tri-state buffers.
+- Resolve a low and a high driver into unknown.
 - See an uninitialized flip-flop read as unknown.
 - Watch a gate read a floating input as unknown.
 - Declare multi-bit buses with `input a[4]` and `wire x[4]`.
@@ -59,6 +61,7 @@ The parser expands each instance into the module gates.
 The parser expands each bus into single-bit signals before simulation.
 The flattened netlist uses dotted names for instance signals.
 The scheduler processes only changed signals.
+The scheduler resolves several gate drivers into one wire value.
 A rising clock edge samples attached flip-flops together.
 An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
@@ -343,6 +346,40 @@ The gate `NOT` reads a floating input as unknown.
 | 5 | 1 | 1 | 1 | 0 |
 | 7 | 1 | 0 | z | x |
 
+## Shared bus demo
+
+Run two tri-state buffers that share one wire.
+
+```powershell
+cabal run gatework -- --netlist fixtures/shared.net --duration 8 --output shared.vcd --set d0=0,e0=0,d1=1,e1=0 --at 2 e0=1 --at 4 e1=1 --at 6 e0=0
+```
+
+The command writes this output:
+
+```text
+Wrote shared.vcd
+Signals: 6
+Duration: 8 time units
+Assertions: 8 passed
+```
+
+Both buffers drive the wire `y`.
+The simulator resolves the two driver values into one value.
+A disabled buffer floats to `z`.
+A `z` contribution is neutral during resolution.
+An enabled buffer drives its data value.
+Two enabled buffers with different values give `x`.
+
+| Time | d0 | e0 | d1 | e1 | y | ny |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 0 | 1 | 0 | z | x |
+| 3 | 0 | 1 | 1 | 0 | 0 | 1 |
+| 5 | 0 | 1 | 1 | 1 | x | x |
+| 7 | 0 | 0 | 1 | 1 | 1 | 0 |
+
+The gate `NOT observer` reads the resolved wire `y`.
+Its output `ny` is the inverse of the resolved value.
+
 ## Undefined state demo
 
 Run a flip-flop with an unknown initial value.
@@ -583,6 +620,25 @@ A gate reads a `z` input as unknown.
 gate TRIBUF driver (d,en) -> y
 ```
 
+### Multiple drivers
+
+One wire can have many gate drivers.
+The simulator resolves the driver values into one wire value.
+The value `z` is neutral during resolution.
+A known value dominates the `z` contributions.
+Two known values that differ give `x`.
+Any unknown contribution gives `x`.
+
+```text
+wire y
+gate TRIBUF a (d0,e0) -> y
+gate TRIBUF b (d1,e1) -> y
+```
+
+A flip-flop output stays exclusive to its flip-flop.
+A gate cannot drive a flip-flop output.
+One wire cannot have two flip-flop drivers.
+
 Logic values use the VCD characters `0`, `1`, `x`, and `z`.
 The value `x` means unknown.
 The value `z` means floating.
@@ -736,10 +792,12 @@ Deterministic tests cover parsing, validation, counter progression, adder carry 
 Deterministic tests also cover NAND, NOR, and XNOR truth tables, module flattening, nested instances, port validation, and circular instantiation.
 Deterministic tests also cover undefined and floating values, tri-state buffers, and their golden output.
 Deterministic tests also cover bus declarations, bitwise gates, bit references, slices, bus registers, bus assertions, bus module ports, and error cases.
+Deterministic tests also cover multi-driver resolution, scheduled driver changes, flip-flop output exclusivity, the shared-bus fixture, and its golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
 QuickCheck properties also compare a bus circuit with a bitwise reference model.
+QuickCheck properties also compare the shared bus with a per-time resolution model.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -755,20 +813,25 @@ The buffer properties show that an enabled buffer passes data and a disabled buf
 The bus XOR property compares a bus gate with per-bit evaluation.
 The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
+The shared-bus property compares each resolved wire value with a per-time model.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, adder, tri-state, undefined-state, and bus VCD text.
+Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, adder, tri-state, undefined-state, bus, and shared-bus VCD text.
 CI runs every demo and compares its output with the golden file.
 
 ## Limitations
 
 The simulator uses four logic values: low, high, unknown, and floating.
 A floating value reads as unknown inside a gate.
-One gate drives one wire.
-The simulator does not resolve two drivers on the same wire.
+Several gates can drive one wire.
+The simulator resolves the driver values into one wire value.
+Resolution treats z as neutral and known values as dominant.
+A low and a high together give x.
+A flip-flop output stays exclusive to its flip-flop.
+A gate cannot drive a flip-flop output.
 Combinational loops stop with an event-limit error.
 All gates use zero delay.
 Zero-delay gates can show combinational settling transients at clock edges and at time zero.
@@ -794,6 +857,7 @@ The dotted instance names are part of the VCD signal names.
 
 ## Roadmap
 
+Release 0.8.0.0 completed multi-driver wire resolution.
 Release 0.7.0.0 completed multi-bit buses, bit references, slices, and bus module ports.
 Release 0.6.0.0 completed undefined and floating logic values and tri-state buffers.
 Release 0.5.0.0 completed universal gates and hierarchical netlists.
@@ -803,11 +867,10 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add multi-driver bus resolution.
-2. Add module definitions in separate files.
-3. Add a waveform report command.
-4. Add whole-bus input values on the command line.
-5. Add multi-bit values in the VCD timeline.
+1. Add module definitions in separate files.
+2. Add a waveform report command.
+3. Add whole-bus input values on the command line.
+4. Add multi-bit values in the VCD timeline.
 
 ## License
 
