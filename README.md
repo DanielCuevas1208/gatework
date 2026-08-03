@@ -4,6 +4,7 @@ Gatework is an event-driven digital logic simulator in Haskell.
 It parses a plain-text netlist, runs the circuit, and writes a VCD waveform file.
 GTKWave and other waveform viewers can open the output.
 The simulator uses four logic values: low, high, unknown, and floating.
+Multi-bit buses use bracketed widths and slices.
 
 ## Value
 
@@ -28,6 +29,13 @@ You can do these tasks:
 - Drive a tri-state buffer from data and enable inputs.
 - See an uninitialized flip-flop read as unknown.
 - Watch a gate read a floating input as unknown.
+- Declare multi-bit buses with `input a[4]` and `wire x[4]`.
+- Read one bit of a bus with `a[2]`.
+- Read a bus slice with `a[3:0]`.
+- Apply a gate bitwise across two buses.
+- Pass a bus through a module port.
+- Sample a whole bus into a register on one clock edge.
+- Check a single bus bit with an assertion.
 
 ## Architecture
 
@@ -48,6 +56,7 @@ netlist text -> parser -> module table -> flattened netlist -> event queue -> wa
 
 The parser validates names, gate arity, drivers, clocks, and references.
 The parser expands each instance into the module gates.
+The parser expands each bus into single-bit signals before simulation.
 The flattened netlist uses dotted names for instance signals.
 The scheduler processes only changed signals.
 A rising clock edge samples attached flip-flops together.
@@ -360,6 +369,40 @@ The `NOT` gate shows the unknown until the flip-flop samples data.
 | 3 | 1 | 1 | 0 |
 | 5 | 0 | 0 | 1 |
 
+## Bus demo
+
+Run four-bit bus operations with gates and a register.
+
+```powershell
+cabal run gatework -- --netlist fixtures/bus.net --duration 3 --output bus.vcd --set 'a[0]=1,a[2]=1,b[1]=1,b[3]=1'
+```
+
+The command writes this output:
+
+```text
+Wrote bus.vcd
+Signals: 24
+Duration: 3 time units
+Assertions: 7 passed
+```
+
+The inputs `a` and `b` are four-bit buses.
+The gate `XOR combine` applies bitwise across both buses.
+The module `invert_bus` passes the bus `x` through a four-bit port.
+The gate `AND mask` reads the slice `a[3:2]`.
+The gate `OR first` reads one bit of each bus.
+The register samples the whole bus on the first rising clock edge.
+Each assertion checks one bit of one bus.
+
+| Time | a[3:0] | b[3:0] | x[3:0] | n[3:0] | q[3:0] |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0101 | 1010 | 1111 | 0000 | 0000 |
+| 1 | 0101 | 1010 | 1111 | 0000 | 1111 |
+
+The value 0101 means `a[0]=1`, `a[1]=0`, `a[2]=1`, and `a[3]=0`.
+Bit 0 is the least-significant bit.
+The value 1010 means `b[0]=0`, `b[1]=1`, `b[2]=0`, and `b[3]=1`.
+
 ## Sample output
 
 The file `fixtures/counter.golden.vcd` holds the complete counter waveform.
@@ -466,6 +509,43 @@ x#
 1$
 ```
 
+The file `fixtures/bus.golden.vcd` holds the bus demo waveform.
+Its header maps each bus bit to one identifier:
+
+```text
+$var wire 1 ! a[0] $end
+$var wire 1 " a[1] $end
+$var wire 1 # a[2] $end
+$var wire 1 $ a[3] $end
+```
+
+Its timeline shows the settled values after the zero-delay transients:
+
+```text
+#0
+1)
+1*
+1+
+1,
+0-
+0.
+0/
+00
+18
+#1
+11
+12
+13
+14
+15
+```
+
+Here `)` is `x[0]`, `-` is `n[0]`, and `0` is `n[3]`.
+The value `18` means `c0` is high.
+The value `00` means `n[3]` is low.
+The identifier `1` is `q[0]`.
+The register outputs change together on the clock edge.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -486,7 +566,7 @@ dff state clock=clk d=a q=state_q init=0
 
 Supported gates are AND, OR, XOR, NAND, NOR, XNOR, NOT, and TRIBUF.
 NAND, NOR, and XNOR use two inputs.
-A gate output must have a `wire` declaration.
+A gate output must have a `wire` or `output` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
 Flip-flop clocks must be declared `clock` signals.
@@ -541,6 +621,64 @@ The assertion compares the settled waveform value with the expectation.
 A mismatch makes the run report an error and fail.
 An assertion time beyond the run duration is an error.
 
+### Buses
+
+A bus is a set of one-bit signals with one name.
+Declare a bus with a width in brackets.
+
+```text
+input a[4]
+output s[4]
+wire t[4]
+```
+
+The bus `a[4]` creates the signals `a[0]`, `a[1]`, `a[2]`, and `a[3]`.
+Bit 0 is the least-significant bit.
+A signal without a width has one bit.
+
+A reference selects the whole bus, one bit, or a slice.
+
+```text
+a          whole bus
+a[2]       one bit
+a[3:0]     a slice
+```
+
+The slice covers the indexes from the lower bound to the upper bound.
+A reference lists its bits from the lowest index upward.
+A slice bound outside the declared width is an error.
+A slice upper bound below the lower bound is an error.
+
+All references in one gate must have the same width.
+The gate applies its function to each bit position.
+
+```text
+gate XOR combine (a,b) -> s
+gate AND first (a[0],b[0]) -> c0
+gate AND mask (a[3:2],b[3:2]) -> t[1:0]
+```
+
+The first gate combines `a[0]` with `b[0]`.
+It also combines `a[1]` with `b[1]`, and so on.
+The second gate combines two single bits.
+The third gate combines two two-bit slices.
+
+A flip-flop reads and writes buses.
+The data and output widths must match.
+The `init=` list matches the width or uses one value for all bits.
+A flip-flop bus output must have a `wire` or `output` declaration.
+
+```text
+dff reg clock=clk d=a q=q init=0,0,0,0
+```
+
+An assertion addresses one bit.
+
+```text
+assert s[0] = 1 at 0
+assert s[2] = 0 at 4
+```
+
 ### Modules and instances
 
 A module is a reusable subcircuit.
@@ -570,6 +708,21 @@ The port counts must match the module signature.
 The internal signals of an instance use dotted names.
 For example, the wire `p` of instance `f0` becomes `f0.p`.
 
+A module port may carry a width.
+The instance connection must match the port width.
+A four-bit port connects to a four-bit bus.
+
+```text
+module invert_bus (a[4]) -> (n[4])
+  gate NOT invert (a) -> n
+end
+
+wire x[4]
+wire n[4]
+gate XOR combine (a,b) -> x
+instance invert_bus inv (x) -> (n)
+```
+
 A flip-flop clock can be a module input port.
 Connect that port to a top-level clock signal.
 Modules may contain instances of other modules.
@@ -582,9 +735,11 @@ The test suite has two parts.
 Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, reset behavior, register width, assertions, and golden VCD output.
 Deterministic tests also cover NAND, NOR, and XNOR truth tables, module flattening, nested instances, port validation, and circular instantiation.
 Deterministic tests also cover undefined and floating values, tri-state buffers, and their golden output.
+Deterministic tests also cover bus declarations, bitwise gates, bit references, slices, bus registers, bus assertions, bus module ports, and error cases.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
+QuickCheck properties also compare a bus circuit with a bitwise reference model.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -597,12 +752,15 @@ The assertion property shows that real values pass and inverted values fail.
 The hierarchy property shows that the hierarchical circuits match the flat circuits.
 The four-state property shows that the gates keep their two-state behavior for known inputs.
 The buffer properties show that an enabled buffer passes data and a disabled buffer floats.
+The bus XOR property compares a bus gate with per-bit evaluation.
+The bus register property compares each register bit with a reference value.
+The bus hierarchy property shows that a bus module matches its flat circuit.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, adder, tri-state, and undefined-state VCD text.
+Golden tests compare the complete counter, register, reset, two-bit register, assertion, gate, hierarchical adder, hierarchical counter, adder, tri-state, undefined-state, and bus VCD text.
 CI runs every demo and compares its output with the golden file.
 
 ## Limitations
@@ -624,12 +782,19 @@ Assertions use the settled value at each time.
 An assertion time beyond the run duration is an error.
 A file defines its modules and its top level in one place.
 Modules flatten before simulation, so the VCD stays flat.
+A bus expands into single-bit signals, so the VCD stays flat.
+A flip-flop bus output must have a `wire` or `output` declaration.
+A reference to a whole bus uses the declared width.
+An assertion addresses one bit, not a whole bus.
+Input assignments on the command line address one bit.
+The CLI does not accept whole-bus values.
 One module declaration cannot live inside another.
 An instance output must connect to a declared signal.
 The dotted instance names are part of the VCD signal names.
 
 ## Roadmap
 
+Release 0.7.0.0 completed multi-bit buses, bit references, slices, and bus module ports.
 Release 0.6.0.0 completed undefined and floating logic values and tri-state buffers.
 Release 0.5.0.0 completed universal gates and hierarchical netlists.
 Release 0.4.0.0 completed waveform assertions and VCD comment metadata.
@@ -638,10 +803,11 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add multi-bit vectors and bus syntax.
-2. Add multi-driver bus resolution.
-3. Add module definitions in separate files.
-4. Add a waveform report command.
+1. Add multi-driver bus resolution.
+2. Add module definitions in separate files.
+3. Add a waveform report command.
+4. Add whole-bus input values on the command line.
+5. Add multi-bit values in the VCD timeline.
 
 ## License
 

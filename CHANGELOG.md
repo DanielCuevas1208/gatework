@@ -5,6 +5,29 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.7.0.0] - 2026-08-03
+
+### Added
+
+- Add multi-bit buses to input, output, and wire declarations with `NAME[WIDTH]`.
+- Add bit references `NAME[i]` and slice references `NAME[hi:lo]`.
+- A gate applies its function bitwise over equal-width references.
+- A D flip-flop accepts bus data and bus output lists.
+- Module input and output ports accept bus widths.
+- Instance connections must match module port widths.
+- Assertions address a single bus bit.
+- Reject out-of-range indexes, invalid slices, and mixed gate widths.
+- Reject dff data and output width mismatches.
+- Reject conflicting widths for the same signal name.
+- Add a bus demo fixture and a golden waveform.
+- Add deterministic tests and QuickCheck properties for bus behavior.
+
+### Changed
+
+- Expand each bus into single-bit signals before simulation.
+- Module input and output ports carry an explicit width.
+- A flip-flop bus output requires a `wire` or `output` declaration.
+
 ## [0.6.0.0] - 2026-08-03
 
 ### Added
