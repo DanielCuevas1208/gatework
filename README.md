@@ -2,6 +2,7 @@
 
 Gatework is an event-driven digital logic simulator in Haskell.
 It parses a plain-text netlist, runs the circuit, and writes a VCD waveform file.
+A report command prints the signal values as a text table.
 GTKWave and other waveform viewers can open the output.
 The simulator uses four logic values: low, high, unknown, and floating.
 Multi-bit buses use bracketed widths and slices.
@@ -25,6 +26,7 @@ You can do these tasks:
 - Load a module library with the `--library` option.
 - Build a hierarchical adder from a module library file.
 - Open the VCD output in GTKWave and inspect the waveforms.
+- Print a text waveform report with the report command.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
 - Check netlist behavior with waveform assertions.
@@ -45,12 +47,13 @@ You can do these tasks:
 
 ## Architecture
 
-The project has four library modules.
+The project has five library modules.
 
 | Module | Responsibility |
 | --- | --- |
 | `Gatework.Logic` | Defines logic values and gate functions |
 | `Gatework.Netlist` | Parses, validates, and flattens circuit files |
+| `Gatework.Report` | Renders the waveform as a text table |
 | `Gatework.Simulator` | Schedules signal changes |
 | `Gatework.VCD` | Renders the waveform text |
 
@@ -58,7 +61,8 @@ The data flow is:
 
 ```text
 library text -> parser -> library module table
-netlist text -> parser -> module table -> flattened netlist -> event queue -> waveform recorder -> assertion check -> VCD
+netlist text -> parser -> module table -> flattened netlist -> event queue -> waveform recorder -> VCD
+waveform recorder -> text table (report command)
 ```
 
 The parser validates names, gate arity, drivers, clocks, and references.
@@ -76,6 +80,7 @@ An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
 The assertion checker compares declared expectations with the waveform.
 The VCD writer uses stable signal order and stable identifiers.
+The report writer prints one row per change time.
 
 The repository layout is:
 
@@ -157,6 +162,37 @@ Its value sequence is 0, 1, 2, 3, and 4.
 | 3 | 0 | 0 | 1 | 0 | 2 |
 | 5 | 0 | 0 | 1 | 1 | 3 |
 | 7 | 0 | 1 | 0 | 0 | 4 |
+
+## Waveform report
+
+Print the counter as a text table.
+
+```powershell
+cabal run gatework -- report --netlist fixtures/counter.net --duration 8
+```
+
+The command prints this table:
+
+```text
+time | q0 | q1 | q2 | q3 | clk | d0 | d1 | carry2 | d2 | carry3 | d3
+---- | -- | -- | -- | -- | --- | -- | -- | ------ | -- | ------ | --
+   0 |  0 |  0 |  0 |  0 |   0 |  1 |  0 |      0 |  0 |      0 |  0
+   1 |  1 |  0 |  0 |  0 |   1 |  0 |  1 |      0 |  0 |      0 |  0
+   2 |  1 |  0 |  0 |  0 |   0 |  0 |  1 |      0 |  0 |      0 |  0
+   3 |  0 |  1 |  0 |  0 |   1 |  1 |  1 |      0 |  0 |      0 |  0
+   4 |  0 |  1 |  0 |  0 |   0 |  1 |  1 |      0 |  0 |      0 |  0
+   5 |  1 |  1 |  0 |  0 |   1 |  0 |  0 |      1 |  1 |      0 |  0
+   6 |  1 |  1 |  0 |  0 |   0 |  0 |  0 |      1 |  1 |      0 |  0
+   7 |  0 |  0 |  1 |  0 |   1 |  1 |  0 |      0 |  1 |      0 |  0
+   8 |  0 |  0 |  1 |  0 |   0 |  1 |  0 |      0 |  1 |      0 |  0
+```
+
+The table shows one row per change time.
+Each column shows one signal.
+Each cell shows the settled value at that time.
+Use `--output FILE` to write the table to a file.
+Without `--output`, the table prints to standard output.
+The report uses the same options as the VCD command.
 
 ## Ripple-carry adder
 
@@ -490,6 +526,9 @@ This excerpt shows the first timestamp:
 
 Each identifier is one signal.
 The header maps identifiers to signal names.
+
+The file `fixtures/counter.golden.report` holds the counter report table.
+It shows one row per change time.
 
 The file `fixtures/register.golden.vcd` holds the complete register waveform.
 This excerpt shows the first two timestamps:
@@ -845,12 +884,14 @@ Deterministic tests also cover undefined and floating values, tri-state buffers,
 Deterministic tests also cover bus declarations, bitwise gates, bit references, slices, bus registers, bus assertions, bus module ports, and error cases.
 Deterministic tests also cover multi-driver resolution, scheduled driver changes, flip-flop output exclusivity, the shared-bus fixture, and its golden output.
 Deterministic tests also cover module library loading, cross-library module references, duplicate module names, and library file validation.
+Deterministic tests also cover the report command, its header order, its counter table, and its golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
 QuickCheck properties also compare a bus circuit with a bitwise reference model.
 QuickCheck properties also compare the shared bus with a per-time resolution model.
 QuickCheck properties also compare a library adder with its flat version.
+QuickCheck properties also compare the counter report with the simulated waveform.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -868,13 +909,16 @@ The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
 The shared-bus property compares each resolved wire value with a per-time model.
 The library adder property compares a library netlist with the flat adder.
+The counter report property compares each report cell with the simulated value.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
 Golden tests compare the counter, register, reset, two-bit register, assertion, gate, hierarchical adder, library adder, hierarchical counter, adder, tri-state, undefined-state, bus, and shared-bus VCD text.
+The golden report test compares the counter report table with its golden file.
 CI runs every demo and compares its output with the golden file.
+CI runs the report demo and compares it with the report golden file.
 CI confirms that a missing library file stops the run.
 
 ## Limitations
@@ -913,9 +957,13 @@ The CLI does not accept whole-bus values.
 One module declaration cannot live inside another.
 An instance output must connect to a declared signal.
 The dotted instance names are part of the VCD signal names.
+The report prints one row per change time.
+The report uses the settled value at each time.
+The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.10.0.0 completed the waveform report command.
 Release 0.9.0.0 completed module libraries.
 Release 0.8.0.0 completed multi-driver wire resolution.
 Release 0.7.0.0 completed multi-bit buses, bit references, slices, and bus module ports.
@@ -927,9 +975,8 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add a waveform report command.
-2. Add whole-bus input values on the command line.
-3. Add multi-bit values in the VCD timeline.
+1. Add whole-bus input values on the command line.
+2. Add multi-bit values in the VCD timeline.
 
 ## License
 

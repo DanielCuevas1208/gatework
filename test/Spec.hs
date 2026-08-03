@@ -2,8 +2,10 @@ module Main (main) where
 
 import Control.Monad (forM)
 import Data.Bits (xor)
+import Data.Char (isSpace)
 import Data.Either (isLeft)
-import Data.List (foldl', isPrefixOf, sortOn)
+import Data.List (elemIndex, find, foldl', isPrefixOf, nub, sort, sortOn)
+import qualified Data.Map.Strict as Map
 import Gatework.Logic (GateType (..), Logic (..), evalGate, parseLogic)
 import Gatework.Netlist
   ( Assertion (..)
@@ -14,6 +16,7 @@ import Gatework.Netlist
   , parseNetlistFileWithLibraries
   , parseNetlistWithLibraries
   )
+import Gatework.Report (renderReport)
 import Gatework.Simulator
   ( AssertionFailure (..)
   , Simulation
@@ -24,6 +27,7 @@ import Gatework.Simulator
   , simulateWithInputs
   , simulateWithScheduledInputs
   , simulationAssertions
+  , simulationChanges
   , simulationFailures
   )
 import Gatework.VCD (renderVCD)
@@ -39,6 +43,7 @@ import Test.QuickCheck
   , vector
   )
 import Test.QuickCheck.Test (isSuccess)
+import Text.Read (readMaybe)
 
 newtype Logical = Logical Logic
   deriving (Eq, Show)
@@ -256,6 +261,9 @@ main = do
     , testLibraryFileEntryPoint
     , testLibraryMissingFileFails
     , testGoldenLibadderVCD
+    , testReportHeader
+    , testReportCounterTable
+    , testGoldenCounterReport
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -300,6 +308,7 @@ main = do
     , ("bus module matches the flat circuit", quickCheckResult propBusModuleMatchesFlat)
     , ("shared bus follows the resolution model", quickCheckResult (propSharedBusResolution shared))
     , ("library adder matches the flat adder", quickCheckResult (propLibraryAdderMatchesFlat adder libadder))
+    , ("counter report matches the waveform", quickCheckResult (propCounterReportMatchesWaveform counter))
     ]
     $ \(label, action) -> do
       result <- action
@@ -1748,6 +1757,95 @@ testGoldenLibadderVCD = do
         pure (renderVCD simulation)
   check "library adder VCD matches golden file" (actual == Right golden)
 
+data ReportTable = ReportTable
+  { reportHeaderSignals :: [String]
+  , reportTableRows :: [(Time, [Logic])]
+  }
+
+parseReport :: String -> Maybe ReportTable
+parseReport text = case lines text of
+  header : divider : body
+    | not (null body)
+    , not (null header)
+    , "time" == head (map trim (splitOnPipe header))
+    , isDivider divider ->
+        let signals = drop 1 (map trim (splitOnPipe header))
+        in do
+          rows <- mapM parseRow body
+          pure (ReportTable signals rows)
+  _ -> Nothing
+  where
+    isDivider line =
+      all (\cell -> not (null cell) && all (== '-') cell) (map trim (splitOnPipe line))
+    parseRow line = case map trim (splitOnPipe line) of
+      [] -> Nothing
+      timeCell : valueCells -> do
+        time <- (fromIntegral :: Int -> Time) <$> readMaybe timeCell
+        values <- mapM parseLogic valueCells
+        pure (time, values)
+    splitOnPipe line = splitOn '|' line
+
+reportCell :: ReportTable -> String -> Time -> Maybe Logic
+reportCell table signal time = do
+  index <- elemIndex signal (reportHeaderSignals table)
+  (_, values) <- find ((== time) . fst) (reportTableRows table)
+  if index < length values then Just (values !! index) else Nothing
+
+testReportHeader :: IO Bool
+testReportHeader = do
+  source <- readFile "fixtures/counter.net"
+  let result = do
+        netlist <- parseNetlist source
+        simulation <- simulate netlist 8
+        pure (renderReport simulation)
+  check "report header lists stable signals" $ case result of
+    Left _ -> False
+    Right text -> case parseReport text of
+      Nothing -> False
+      Just table ->
+        reportHeaderSignals table
+          == [ "q0", "q1", "q2", "q3", "clk"
+             , "d0", "d1", "carry2", "d2", "carry3", "d3"
+             ]
+
+testReportCounterTable :: IO Bool
+testReportCounterTable = do
+  source <- readFile "fixtures/counter.net"
+  let result = do
+        netlist <- parseNetlist source
+        simulation <- simulate netlist 8
+        pure (renderReport simulation)
+  check "report rows show the counter state" $ case result of
+    Left _ -> False
+    Right text -> case parseReport text of
+      Nothing -> False
+      Just table ->
+        reportCell table "q0" 0 == Just Low
+          && reportCell table "q0" 1 == Just High
+          && reportCell table "q1" 3 == Just High
+          && reportCell table "q0" 7 == Just Low
+          && reportCell table "clk" 7 == Just High
+          && reportCell table "carry2" 5 == Just High
+          && reportCell table "d3" 0 == Just Low
+
+testGoldenCounterReport :: IO Bool
+testGoldenCounterReport = do
+  source <- readFile "fixtures/counter.net"
+  golden <- readFile "fixtures/counter.golden.report"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulate netlist 8
+        pure (renderReport simulation)
+  check "counter report matches golden file" (actual == Right golden)
+
+splitOn :: Char -> String -> [String]
+splitOn delimiter value = case break (== delimiter) value of
+  (part, _ : rest) -> part : splitOn delimiter rest
+  (part, []) -> [part]
+
+trim :: String -> String
+trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
+
 evalTwoState :: GateType -> [Logic] -> Logic
 evalTwoState And inputs = if all (== High) inputs then High else Low
 evalTwoState Or inputs = if any (== High) inputs then High else Low
@@ -2021,6 +2119,32 @@ propHierarchicalCounterMatchesFlat flat hierarchical =
       all
         (\name -> valueAt flatResult name time == valueAt hierarchicalResult name time)
         (map fst counterBits)
+
+propCounterReportMatchesWaveform :: Netlist -> Property
+propCounterReportMatchesWaveform netlist =
+  forAll (choose (0, 30)) $ \duration ->
+    case simulate netlist duration of
+      Left _ -> property False
+      Right simulation ->
+        let text = renderReport simulation
+        in case parseReport text of
+          Nothing -> property False
+          Just table ->
+            property
+              ( all (rowMatches simulation table) (reportTableRows table)
+                  && map fst (reportTableRows table) == reportChangeTimes simulation
+              )
+  where
+    rowMatches simulation table (time, values) =
+      and
+        [ valueAt simulation signal time == expected
+        | (signal, expected) <- zip (reportHeaderSignals table) values
+        ]
+    reportChangeTimes simulation = sort . nub $
+      [ time
+      | entries <- Map.elems (simulationChanges simulation)
+      , (time, _) <- entries
+      ]
 
 propGatesFixture :: Netlist -> Property
 propGatesFixture netlist =
