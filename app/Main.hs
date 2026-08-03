@@ -3,7 +3,7 @@ module Main (main) where
 import Data.List (intercalate)
 import Gatework.Logic (Logic, parseLogic)
 import Gatework.Netlist (netlistSignals, parseNetlistFile)
-import Gatework.Simulator (simulateWithInputs)
+import Gatework.Simulator (Time, simulateWithScheduledInputs)
 import Gatework.VCD (writeVCD)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -15,10 +15,11 @@ data Options = Options
   , optionDuration :: Integer
   , optionOutput :: FilePath
   , optionInputs :: [(String, Logic)]
+  , optionScheduled :: [(Time, String, Logic)]
   }
 
 defaultOptions :: Options
-defaultOptions = Options Nothing 16 "gatework.vcd" []
+defaultOptions = Options Nothing 16 "gatework.vcd" [] []
 
 main :: IO ()
 main = do
@@ -35,13 +36,14 @@ run options = case optionNetlist options of
     parsed <- parseNetlistFile path
     case parsed of
       Left message -> failWith message
-      Right netlist -> case simulateWithInputs netlist (optionInputs options) (optionDuration options) of
-        Left message -> failWith message
-        Right simulation -> do
-          writeVCD (optionOutput options) simulation
-          putStrLn ("Wrote " ++ optionOutput options)
-          putStrLn ("Signals: " ++ show (length (netlistSignals netlist)))
-          putStrLn ("Duration: " ++ show (optionDuration options) ++ " time units")
+      Right netlist ->
+        case simulateWithScheduledInputs netlist (optionInputs options) (optionScheduled options) (optionDuration options) of
+          Left message -> failWith message
+          Right simulation -> do
+            writeVCD (optionOutput options) simulation
+            putStrLn ("Wrote " ++ optionOutput options)
+            putStrLn ("Signals: " ++ show (length (netlistSignals netlist)))
+            putStrLn ("Duration: " ++ show (optionDuration options) ++ " time units")
 
 parseOptions :: [String] -> Either String (Maybe Options)
 parseOptions arguments = parseMore defaultOptions arguments
@@ -57,6 +59,10 @@ parseOptions arguments = parseMore defaultOptions arguments
       "--set" : assignments : rest -> do
         values <- parseAssignments assignments
         parseMore options {optionInputs = optionInputs options ++ values} rest
+      "--at" : timeText : assignments : rest -> do
+        time <- maybe (Left "--at requires an integer time") Right (readMaybe timeText)
+        values <- parseAssignments assignments
+        parseMore options {optionScheduled = optionScheduled options ++ [(time, name, logic) | (name, logic) <- values]} rest
       option : _ -> Left ("unknown option: " ++ option)
 
 parseAssignments :: String -> Either String [(String, Logic)]
@@ -81,9 +87,10 @@ failWith message = do
 
 usage :: String
 usage = intercalate "\n"
-  [ "gatework --netlist FILE [--duration N] [--output FILE] [--set signal=0,signal=1]"
+  [ "gatework --netlist FILE [--duration N] [--output FILE] [--set signal=0,signal=1] [--at TIME signal=0,signal=1]"
   , ""
   , "Simulate a netlist and write a VCD waveform."
+  , "Use --at to change input signals at a fixed time during the run."
   ]
 
 

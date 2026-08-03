@@ -4,7 +4,7 @@ import Control.Monad (forM)
 import Data.Either (isLeft)
 import Gatework.Logic (GateType (..), Logic (..), evalGate)
 import Gatework.Netlist (Netlist (..), parseNetlist)
-import Gatework.Simulator (Simulation, Time, signalChanges, simulate, simulateWithInputs)
+import Gatework.Simulator (Simulation, Time, signalChanges, simulate, simulateWithInputs, simulateWithScheduledInputs)
 import Gatework.VCD (renderVCD)
 import System.Exit (exitFailure)
 import Test.QuickCheck
@@ -13,7 +13,9 @@ import Test.QuickCheck
   , choose
   , elements
   , forAll
+  , property
   , quickCheckResult
+  , vector
   )
 import Test.QuickCheck.Test (isSuccess)
 
@@ -43,6 +45,18 @@ main = do
       putStrLn ("adder fixture failed to parse: " ++ message)
       exitFailure
     Right netlist -> pure netlist
+  counterSource <- readFile "fixtures/counter.net"
+  counter <- case parseNetlist counterSource of
+    Left message -> do
+      putStrLn ("counter fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
+  registerSource <- readFile "fixtures/register.net"
+  register <- case parseNetlist registerSource of
+    Left message -> do
+      putStrLn ("register fixture failed to parse: " ++ message)
+      exitFailure
+    Right netlist -> pure netlist
   deterministic <- sequence
     [ testParser
     , testParserAcceptsCommentsAndBlankLines
@@ -63,11 +77,15 @@ main = do
     , testEventLimitOnCombinationalLoop
     , testNegativeDurationRejected
     , testInputOverrideValidation
+    , testScheduledInputValidation
+    , testScheduledTransitionNoOp
+    , testRegisterSamplesScheduledData
     , testCounter
     , testCounterFullSequence
     , testAdder
     , testVCDHeader
     , testGoldenVCD
+    , testGoldenRegisterVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -90,6 +108,8 @@ main = do
     , ("AND distributes over OR", quickCheckResult propDistribution)
     , ("XNOR cancels a shared input", quickCheckResult propXnorIdentity)
     , ("ripple-carry adder adds four-bit values", quickCheckResult (propRippleCarryAdder adder))
+    , ("scheduled inputs match a reference model", quickCheckResult (propScheduledInputSampling register))
+    , ("scheduled entry point matches the direct entry point", quickCheckResult (propEquivalentEntryPoints counter))
     ]
     $ \(label, action) -> do
       result <- action
@@ -239,6 +259,46 @@ testInputOverrideValidation =
             Right simulation -> finalValue simulation "out" == Just Low
             Left _ -> False
 
+testScheduledInputValidation :: IO Bool
+testScheduledInputValidation =
+  let netlist = parseNetlist "input a\nwire out\ngate NOT inv (a) -> out"
+  in case netlist of
+    Left _ -> check "scheduled inputs are validated" False
+    Right parsed ->
+      check "scheduled inputs are validated" $
+        isLeft (simulateWithScheduledInputs parsed [] [(-1, "a", High)] 1)
+          && isLeft (simulateWithScheduledInputs parsed [] [(1, "b", High)] 1)
+          && case simulateWithScheduledInputs parsed [] [(1, "a", High)] 2 of
+            Right simulation ->
+              signalChanges simulation "a" == [(0, Low), (1, High)]
+                && finalValue simulation "out" == Just Low
+            Left _ -> False
+
+testScheduledTransitionNoOp :: IO Bool
+testScheduledTransitionNoOp =
+  let netlist = parseNetlist "input a\nwire out\ngate NOT inv (a) -> out"
+  in case netlist of
+    Left _ -> check "unchanged scheduled values add no events" False
+    Right parsed -> check "unchanged scheduled values add no events" $ case
+      simulateWithScheduledInputs parsed [("a", High)] [(1, "a", High)] 3 of
+        Right simulation -> signalChanges simulation "a" == [(0, High)]
+        Left _ -> False
+
+testRegisterSamplesScheduledData :: IO Bool
+testRegisterSamplesScheduledData = do
+  source <- readFile "fixtures/register.net"
+  let simulation = do
+        netlist <- parseNetlist source
+        simulateWithScheduledInputs netlist [("d", High)]
+          [(2, "d", Low), (4, "d", High), (6, "d", Low)] 8
+  check "register samples a scheduled data stream" $ case simulation of
+    Right result ->
+      and
+        [ signalChanges result "d" == [(0, High), (2, Low), (4, High), (6, Low)]
+        , signalChanges result "q" == [(0, Low), (1, High), (3, Low), (5, High), (7, Low)]
+        ]
+    Left _ -> False
+
 testCounter :: IO Bool
 testCounter = do
   source <- readFile "fixtures/counter.net"
@@ -316,6 +376,18 @@ testGoldenVCD = do
         simulation <- simulate netlist 8
         pure (renderVCD simulation)
   check "counter VCD matches golden file" (actual == Right golden)
+
+testGoldenRegisterVCD :: IO Bool
+testGoldenRegisterVCD = do
+  source <- readFile "fixtures/register.net"
+  golden <- readFile "fixtures/register.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("d", High)]
+            [(2, "d", Low), (4, "d", High), (6, "d", Low)] 8
+        pure (renderVCD simulation)
+  check "register VCD matches golden file" (actual == Right golden)
 
 propAndCommutative :: Logical -> Logical -> Bool
 propAndCommutative (Logical left) (Logical right) =
@@ -395,6 +467,39 @@ propRippleCarryAdder netlist =
         in case simulateWithInputs netlist (adderInputs a b carryIn) 0 of
           Right simulation -> resultToInt simulation == expected
           Left _ -> False
+
+propScheduledInputSampling :: Netlist -> Property
+propScheduledInputSampling netlist =
+  forAll (choose (1, 6)) $ \count ->
+    forAll (vector count) $ \dataValues ->
+      let times = [2 * fromIntegral index | index <- [1 .. count]] :: [Time]
+          transitions = zip3 times (repeat "d") (map boolToLogic dataValues)
+          duration = 2 * fromIntegral count + 1
+      in case simulateWithScheduledInputs netlist [("d", High)] transitions duration of
+        Left _ -> property False
+        Right simulation ->
+          property (all (samplesMatch simulation dataValues) [1, 3 .. duration])
+  where
+    samplesMatch simulation dataValues edge =
+      let preceding = (edge - 1) `div` 2
+          reference = if preceding >= 1 then dataValues !! (fromIntegral preceding - 1) else True
+          expected = boolToLogic reference
+      in valueAt simulation "d" (edge - 1) == expected
+          && valueAt simulation "q" edge == expected
+
+propEquivalentEntryPoints :: Netlist -> Property
+propEquivalentEntryPoints netlist =
+  forAll (choose (0, 30)) $ \duration ->
+    case simulateWithScheduledInputs netlist [] [] duration of
+      Left _ -> property False
+      Right viaScheduled -> case simulate netlist duration of
+        Left _ -> property False
+        Right direct ->
+          property (renderVCD viaScheduled == renderVCD direct)
+
+boolToLogic :: Bool -> Logic
+boolToLogic True = High
+boolToLogic False = Low
 
 adderInputs :: Int -> Int -> Logic -> [(String, Logic)]
 adderInputs a b carryIn =

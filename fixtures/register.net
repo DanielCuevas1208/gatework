@@ -1,0 +1,5 @@
+# Single D flip-flop with a scheduled data stream.
+input d
+output q
+clock clk period=2
+dff reg clock=clk d=d q=q init=0

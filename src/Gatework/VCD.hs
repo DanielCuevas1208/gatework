@@ -5,6 +5,8 @@ module Gatework.VCD
 
 import Data.List (nub, sort)
 import qualified Data.Map.Strict as Map
+import qualified Paths_gatework (version)
+import Data.Version (showVersion)
 import Gatework.Logic
 import Gatework.Simulator
 
@@ -18,7 +20,7 @@ renderVCD simulation = header ++ timeline
         , "  generated deterministically by gatework"
         , "$end"
         , "$version"
-        , "  gatework 0.1.0.0"
+        , "  gatework " ++ showVersion Paths_gatework.version
         , "$end"
         , "$timescale 1ns $end"
         , "$scope module gatework $end"
