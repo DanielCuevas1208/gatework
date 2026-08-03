@@ -18,6 +18,8 @@ You can do these tasks:
 - Open the VCD output in GTKWave and inspect the waveforms.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
+- Check netlist behavior with waveform assertions.
+- Inspect assertion metadata inside the VCD file.
 
 ## Architecture
 
@@ -33,7 +35,7 @@ The project has four library modules.
 The data flow is:
 
 ```text
-netlist text -> parser -> typed model -> event queue -> waveform recorder -> VCD
+netlist text -> parser -> typed model -> event queue -> waveform recorder -> assertion check -> VCD
 ```
 
 The parser validates names, gate arity, drivers, clocks, and references.
@@ -41,6 +43,7 @@ The scheduler processes only changed signals.
 A rising clock edge samples attached flip-flops together.
 An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
+The assertion checker compares declared expectations with the waveform.
 The VCD writer uses stable signal order and stable identifiers.
 
 The repository layout is:
@@ -202,6 +205,43 @@ The register samples every bit on each rising clock edge.
 | 8 | 1 | 1 | 0 | 0 | 0 |
 | 9 | 1 | 1 | 0 | 1 | 1 |
 
+## Assertion demo
+
+Run a netlist that checks its own waveform.
+
+```powershell
+cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output assert.vcd --set a=0,b=1 --at 3 a=1 --at 5 a=0
+```
+
+The command writes this output:
+
+```text
+Wrote assert.vcd
+Signals: 4
+Duration: 6 time units
+Assertions: 3 passed
+```
+
+The fixture declares three expectations.
+Each one checks the output `y` at a fixed time.
+The run reports a pass only when every assertion holds.
+
+| Time | a | b | y | Assertion |
+| --- | --- | --- | --- | --- |
+| 0 | 0 | 1 | 1 | `y = 1` holds |
+| 3 | 1 | 1 | 0 | `y = 0` holds |
+| 5 | 0 | 1 | 1 | `y = 1` holds |
+
+A wrong expectation makes the run fail.
+The error names the signal, the time, and both values.
+
+```text
+assertion failed: out must be 1 at time 2, but was 0
+```
+
+The run still writes the VCD file.
+Use the file to inspect the waveform after the failure.
+
 ## Sample output
 
 The file `fixtures/counter.golden.vcd` holds the complete counter waveform.
@@ -252,6 +292,17 @@ Here `!` is the data input `d`, `"` is the output `q`, and `#` is the clock `clk
 The files `fixtures/reset.golden.vcd` and `fixtures/reg2.golden.vcd` hold
 the reset and two-bit register waveforms.
 
+The file `fixtures/assert.golden.vcd` holds the assertion demo waveform.
+Its header carries the assertion text as a comment block:
+
+```text
+$comment
+  assert y = 1 at 0
+  assert y = 0 at 3
+  assert y = 1 at 5
+$end
+```
+
 ## Netlist format
 
 Use one declaration per line.
@@ -291,11 +342,25 @@ The `rst=` field names an active-high reset signal.
 Reset acts asynchronously. It does not wait for a clock edge.
 An asserted reset forces every bit to its initial value.
 
+Use `assert` to check a signal value at a fixed time.
+The time must be a non-negative integer.
+The value must be 0 or 1.
+The signal must exist in the netlist.
+
+```text
+assert y = 1 at 5
+assert q0 = 0 at 3
+```
+
+The assertion compares the settled waveform value with the expectation.
+A mismatch makes the run report an error and fail.
+An assertion time beyond the run duration is an error.
+
 ## Verification
 
 The test suite has two parts.
-Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, reset behavior, register width, and golden VCD output.
-QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, and register width.
+Deterministic tests cover parsing, validation, counter progression, adder carry propagation, scheduled inputs, reset behavior, register width, assertions, and golden VCD output.
+QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -304,13 +369,14 @@ The scheduled-input property compares each sampled flip-flop value with a refere
 The reset property compares the waveform with a reference model of reset and clock events.
 The width property compares each register bit with a per-bit reference model.
 The entry-point property shows that both simulation entry points produce identical output.
+The assertion property shows that real values pass and inverted values fail.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the complete counter, register, reset, and two-bit register VCD text.
-CI runs all five demos and compares their output with the golden files.
+Golden tests compare the complete counter, register, reset, two-bit register, and assertion VCD text.
+CI runs all six demos and compares their output with the golden files.
 
 ## Limitations
 
@@ -324,16 +390,18 @@ VCD output uses one module scope and one-bit signals.
 An asynchronous reset that releases on a clock edge is a race.
 The event order decides the result.
 A wide flip-flop uses one shared reset signal.
+Assertions use the settled value at each time.
+An assertion time beyond the run duration is an error.
 
 ## Roadmap
 
+Release 0.4.0.0 completed waveform assertions and VCD comment metadata.
 Release 0.3.0.0 completed reset pins and parameterized flip-flops.
 Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add richer VCD metadata and waveform assertions.
-2. Add more gates and hierarchical netlists.
+1. Add more gates and hierarchical netlists.
 
 ## License
 

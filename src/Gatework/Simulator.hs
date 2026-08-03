@@ -1,5 +1,7 @@
 module Gatework.Simulator
-  ( Simulation (..)
+  ( Assertion (..)
+  , AssertionFailure (..)
+  , Simulation (..)
   , Time
   , signalChanges
   , simulate
@@ -13,12 +15,20 @@ import qualified Data.Map.Strict as Map
 import Gatework.Logic
 import Gatework.Netlist
 
-type Time = Integer
-
 data Simulation = Simulation
   { simulationDuration :: Time
   , simulationSignals :: [String]
   , simulationChanges :: Map String [(Time, Logic)]
+  , simulationAssertions :: [Assertion]
+  , simulationFailures :: [AssertionFailure]
+  }
+  deriving (Eq, Show)
+
+data AssertionFailure = AssertionFailure
+  { failureSignal :: String
+  , failureTime :: Time
+  , failureExpected :: Logic
+  , failureActual :: Logic
   }
   deriving (Eq, Show)
 
@@ -44,12 +54,48 @@ simulateWithScheduledInputs netlist inputOverrides scheduledInputs duration
   | otherwise = do
       validateInputOverrides netlist inputOverrides
       validateScheduledInputs netlist scheduledInputs
+      validateAssertionTimes netlist duration
       let baseState = initialState netlist inputOverrides
           initialEvents = map (initialGateEvent baseState) (netlistGates netlist)
           scheduledQueue = foldl' addScheduledEvent (clockQueue netlist duration) scheduledInputs
           queue = addInitialEvents scheduledQueue initialEvents
           initialChanges = initialWaveform netlist baseState
-      runQueue netlist duration queue baseState initialChanges
+      result <- runQueue netlist duration queue baseState initialChanges
+      let assertions = netlistAssertions netlist
+      pure result
+        { simulationAssertions = assertions
+        , simulationFailures = checkAssertions assertions result
+        }
+
+validateAssertionTimes :: Netlist -> Time -> Either String ()
+validateAssertionTimes netlist duration =
+  mapM_ checkTime (netlistAssertions netlist)
+  where
+    checkTime assertion
+      | assertionTime assertion > duration =
+          Left ( "assertion time exceeds duration: "
+              ++ assertionSignal assertion
+              ++ " at time "
+              ++ show (assertionTime assertion)
+              ++ " for duration "
+              ++ show duration
+              )
+      | otherwise = Right ()
+
+checkAssertions :: [Assertion] -> Simulation -> [AssertionFailure]
+checkAssertions assertions simulation =
+  [ AssertionFailure signal time expected actual
+  | assertion <- assertions
+  , let signal = assertionSignal assertion
+        time = assertionTime assertion
+        expected = assertionValue assertion
+  , Just actual <- [valueAt time (signalChanges simulation signal)]
+  , actual /= expected
+  ]
+  where
+    valueAt time changes = case reverse [(t, value) | (t, value) <- changes, t <= time] of
+      (_, value) : _ -> Just value
+      [] -> Nothing
 
 validateInputOverrides :: Netlist -> [(String, Logic)] -> Either String ()
 validateInputOverrides netlist overrides = do
@@ -122,9 +168,9 @@ clockValue clock time =
 
 runQueue :: Netlist -> Time -> EventQueue -> State -> Changes -> Either String Simulation
 runQueue netlist duration queue state changes = case Map.minViewWithKey queue of
-  Nothing -> Right (Simulation duration (netlistSignals netlist) changes)
+  Nothing -> Right (Simulation duration (netlistSignals netlist) changes [] [])
   Just ((time, pending), remaining)
-    | time > duration -> Right (Simulation duration (netlistSignals netlist) changes)
+    | time > duration -> Right (Simulation duration (netlistSignals netlist) changes [] [])
     | otherwise -> do
         (nextQueue, nextState, nextChanges) <-
           settleAtTime netlist duration time pending remaining state changes 0

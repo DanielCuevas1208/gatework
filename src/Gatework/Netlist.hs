@@ -1,8 +1,10 @@
 module Gatework.Netlist
-  ( Clock (..)
+  ( Assertion (..)
+  , Clock (..)
   , DFlipFlop (..)
   , Gate (..)
   , Netlist (..)
+  , Time
   , netlistSignals
   , parseNetlist
   , parseNetlistFile
@@ -12,6 +14,15 @@ import Control.Monad (unless)
 import Data.Char (isAlphaNum, isSpace, toUpper)
 import Data.List (foldl', nub)
 import Gatework.Logic
+
+type Time = Integer
+
+data Assertion = Assertion
+  { assertionSignal :: String
+  , assertionValue :: Logic
+  , assertionTime :: Time
+  }
+  deriving (Eq, Show)
 
 data Clock = Clock
   { clockSignal :: String
@@ -44,6 +55,7 @@ data Netlist = Netlist
   , netlistClocks :: [Clock]
   , netlistGates :: [Gate]
   , netlistFlipFlops :: [DFlipFlop]
+  , netlistAssertions :: [Assertion]
   }
   deriving (Eq, Show)
 
@@ -54,9 +66,10 @@ data Declaration
   | ClockDeclaration Clock
   | GateDeclaration Gate
   | FlipFlopDeclaration DFlipFlop
+  | AssertionDeclaration Assertion
 
 emptyNetlist :: Netlist
-emptyNetlist = Netlist [] [] [] [] [] []
+emptyNetlist = Netlist [] [] [] [] [] [] []
 
 parseNetlistFile :: FilePath -> IO (Either String Netlist)
 parseNetlistFile path = parseNetlist <$> readFile path
@@ -82,6 +95,8 @@ addDeclaration netlist declaration = case declaration of
   GateDeclaration gate -> netlist {netlistGates = netlistGates netlist ++ [gate]}
   FlipFlopDeclaration flipFlop ->
     netlist {netlistFlipFlops = netlistFlipFlops netlist ++ [flipFlop]}
+  AssertionDeclaration assertion ->
+    netlist {netlistAssertions = netlistAssertions netlist ++ [assertion]}
 
 parseLine :: (Int, String) -> Either String Declaration
 parseLine (lineNumber, line) = case words line of
@@ -122,7 +137,15 @@ parseLine (lineNumber, line) = case words line of
       Nothing -> Right Nothing
       Just value -> Just <$> parseIdentifier lineNumber value
     pure (FlipFlopDeclaration (DFlipFlop dffName' clockName dataNames outputNames initial reset))
-  _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, or dff declaration")
+  ["assert", signal, "=", value, "at", timeText] -> do
+    signalName <- parseIdentifier lineNumber signal
+    logic <- maybe
+      (Left (lineError lineNumber "assert value must be 0 or 1"))
+      Right
+      (parseLogic value)
+    time <- parseAssertTime lineNumber timeText
+    pure (AssertionDeclaration (Assertion signalName logic time))
+  _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, dff, or assert declaration")
 
 parsePorts :: Int -> String -> Either String [String]
 parsePorts lineNumber token
@@ -182,6 +205,13 @@ parseDecimal lineNumber key token = case reads token of
   [(number, "")] -> Right number
   _ -> Left (lineError lineNumber (key ++ " must be an integer"))
 
+parseAssertTime :: Int -> String -> Either String Time
+parseAssertTime lineNumber token = do
+  time <- parseDecimal lineNumber "assert time" token
+  unless (time >= 0) $
+    Left (lineError lineNumber "assert time cannot be negative")
+  pure (fromIntegral time)
+
 requiredField :: Int -> String -> [(String, String)] -> Either String String
 requiredField lineNumber key fields = case lookup key fields of
   Just value -> Right value
@@ -219,6 +249,7 @@ validateNetlist netlist = do
   mapM_ (checkKnown declared "output") (netlistOutputs netlist)
   mapM_ (checkGate declared (netlistWires netlist)) (netlistGates netlist)
   mapM_ (checkFlipFlop declared clockNames) (netlistFlipFlops netlist)
+  mapM_ (checkAssertion (netlistSignals netlist)) (netlistAssertions netlist)
   pure netlist
 
 checkGate :: [String] -> [String] -> Gate -> Either String ()
@@ -237,6 +268,10 @@ checkFlipFlop declared clocks flipFlop = do
 checkKnown :: [String] -> String -> String -> Either String ()
 checkKnown declared label name =
   unless (name `elem` declared) (Left (label ++ " is not declared: " ++ name))
+
+checkAssertion :: [String] -> Assertion -> Either String ()
+checkAssertion known assertion =
+  checkKnown known "assert signal" (assertionSignal assertion)
 
 checkDuplicates :: String -> [String] -> Either String ()
 checkDuplicates label values = case duplicates values of

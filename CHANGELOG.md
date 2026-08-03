@@ -5,6 +5,17 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.4.0.0] - 2026-08-03
+
+### Added
+
+- Check netlist waveform assertions with the assert declaration.
+- Assert syntax: assert SIGNAL = VALUE at TIME.
+- Report each failed assertion with the expected and actual value.
+- Write assertion text into the VCD header as a comment block.
+- Bundle a golden waveform for an assertion demo.
+- Add QuickCheck properties for assertion soundness.
+
 ## [0.3.0.0] - 2026-08-03
 
 ### Added

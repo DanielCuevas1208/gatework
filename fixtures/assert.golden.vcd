@@ -4,39 +4,31 @@ $end
 $version
   gatework 0.4.0.0
 $end
+$comment
+  assert y = 1 at 0
+  assert y = 0 at 3
+  assert y = 1 at 5
+$end
 $timescale 1ns $end
 $scope module gatework $end
-$var wire 1 ! d $end
-$var wire 1 " rst $end
-$var wire 1 # q $end
-$var wire 1 $ clk $end
+$var wire 1 ! a $end
+$var wire 1 " b $end
+$var wire 1 # y $end
+$var wire 1 $ n $end
 $upscope $end
 $enddefinitions $end
 #0
-1!
-0"
-0#
-0$
-#1
-1#
-1$
-#2
+0!
 1"
 0#
+1#
 0$
-#3
 1$
-#4
-0"
+#3
+1!
+0#
 0$
 #5
+0!
 1#
 1$
-#6
-0!
-0$
-#7
-0#
-1$
-#8
-0$
