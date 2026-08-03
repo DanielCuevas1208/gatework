@@ -40,5 +40,16 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/reg2.net --duration 10 --output /tmp/reg2.vcd --set d0=1,d1=0 --at 4 d0=0,d1=1 --at 6 rst=1 --at 8 rst=0,d0=1,d1=1
       - name: Compare the two-bit register demo with the golden file
         run: diff fixtures/reg2.golden.vcd /tmp/reg2.vcd
+      - name: Run the assertion demo
+        run: cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/assert.vcd --set a=0,b=1 --at 3 a=1 --at 5 a=0
+      - name: Compare the assertion demo with the golden file
+        run: diff fixtures/assert.golden.vcd /tmp/assert.vcd
+      - name: Confirm a failed assertion stops the run
+        run: |
+          if cabal run gatework -- --netlist fixtures/assert.net --duration 6 --output /tmp/fail.vcd --set a=1,b=1 2>/tmp/fail.log; then
+            echo "expected the assertion to fail"
+            exit 1
+          fi
+          grep -q "assertion failed: y must be 1 at time 0" /tmp/fail.log
       - name: Run the adder demo
         run: cabal run gatework -- --netlist fixtures/adder.net --duration 0 --output /tmp/adder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0

@@ -22,14 +22,28 @@ renderVCD simulation = header ++ timeline
         , "$version"
         , "  gatework " ++ showVersion Paths_gatework.version
         , "$end"
-        , "$timescale 1ns $end"
-        , "$scope module gatework $end"
         ]
+          ++ commentLines
+          ++ [ "$timescale 1ns $end"
+             , "$scope module gatework $end"
+             ]
           ++ ["$var wire 1 " ++ identifier ++ " " ++ signal ++ " $end" | (signal, identifier) <- identifiers]
           ++ [ "$upscope $end"
              , "$enddefinitions $end"
              ]
       )
+    commentLines
+      | null assertions = []
+      | otherwise = "$comment" : map renderAssertion assertions ++ ["$end"]
+    assertions = simulationAssertions simulation
+    renderAssertion assertion = concat
+      [ "  assert "
+      , assertionSignal assertion
+      , " = "
+      , [logicChar (assertionValue assertion)]
+      , " at "
+      , show (assertionTime assertion)
+      ]
     timeline = concatMap (renderTime simulation identifiers) (changeTimes simulation)
 
 writeVCD :: FilePath -> Simulation -> IO ()

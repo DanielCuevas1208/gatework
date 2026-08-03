@@ -1,9 +1,16 @@
 module Main (main) where
 
 import Data.List (intercalate)
-import Gatework.Logic (Logic, parseLogic)
+import Gatework.Logic (Logic, logicChar, parseLogic)
 import Gatework.Netlist (netlistSignals, parseNetlistFile)
-import Gatework.Simulator (Time, simulateWithScheduledInputs)
+import Gatework.Simulator
+  ( AssertionFailure (..)
+  , Simulation
+  , Time
+  , simulationAssertions
+  , simulationFailures
+  , simulateWithScheduledInputs
+  )
 import Gatework.VCD (writeVCD)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -44,6 +51,29 @@ run options = case optionNetlist options of
             putStrLn ("Wrote " ++ optionOutput options)
             putStrLn ("Signals: " ++ show (length (netlistSignals netlist)))
             putStrLn ("Duration: " ++ show (optionDuration options) ++ " time units")
+            reportAssertions simulation
+
+reportAssertions :: Simulation -> IO ()
+reportAssertions simulation = case simulationFailures simulation of
+  [] -> case simulationAssertions simulation of
+    [] -> pure ()
+    assertions ->
+      putStrLn ("Assertions: " ++ show (length assertions) ++ " passed")
+  failures -> do
+    mapM_ (hPutStrLn stderr . renderFailure) failures
+    exitFailure
+
+renderFailure :: AssertionFailure -> String
+renderFailure failure = concat
+  [ "assertion failed: "
+  , failureSignal failure
+  , " must be "
+  , [logicChar (failureExpected failure)]
+  , " at time "
+  , show (failureTime failure)
+  , ", but was "
+  , [logicChar (failureActual failure)]
+  ]
 
 parseOptions :: [String] -> Either String (Maybe Options)
 parseOptions arguments = parseMore defaultOptions arguments
@@ -91,6 +121,7 @@ usage = intercalate "\n"
   , ""
   , "Simulate a netlist and write a VCD waveform."
   , "Use --at to change input signals at a fixed time during the run."
+  , "Check assert declarations in the netlist against the waveform."
   ]
 
 

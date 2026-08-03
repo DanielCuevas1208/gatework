@@ -4,8 +4,18 @@ import Control.Monad (forM)
 import Data.Either (isLeft)
 import Data.List (sortOn)
 import Gatework.Logic (GateType (..), Logic (..), evalGate)
-import Gatework.Netlist (Netlist (..), parseNetlist)
-import Gatework.Simulator (Simulation, Time, signalChanges, simulate, simulateWithInputs, simulateWithScheduledInputs)
+import Gatework.Netlist (Assertion (..), Netlist (..), netlistAssertions, netlistSignals, parseNetlist)
+import Gatework.Simulator
+  ( AssertionFailure (..)
+  , Simulation
+  , Time
+  , signalChanges
+  , simulate
+  , simulateWithInputs
+  , simulateWithScheduledInputs
+  , simulationAssertions
+  , simulationFailures
+  )
 import Gatework.VCD (renderVCD)
 import System.Exit (exitFailure)
 import Test.QuickCheck
@@ -109,6 +119,13 @@ main = do
     , testGoldenRegisterVCD
     , testGoldenResetVCD
     , testGoldenRegister2VCD
+    , testParserAcceptsAssertion
+    , testParserRejectsInvalidAssertion
+    , testAssertionPasses
+    , testAssertionFails
+    , testAssertionBeyondDuration
+    , testVCDCommentMetadata
+    , testGoldenAssertVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -135,6 +152,7 @@ main = do
     , ("reset matches a reference model", quickCheckResult (propResetSampling reset))
     , ("register width matches a per-bit reference", quickCheckResult (propRegisterWidthSampling reg2))
     , ("scheduled entry point matches the direct entry point", quickCheckResult (propEquivalentEntryPoints counter))
+    , ("assertions follow the simulated waveform", quickCheckResult (propAssertionSoundness counter))
     ]
     $ \(label, action) -> do
       result <- action
@@ -514,6 +532,93 @@ testGoldenRegister2VCD = do
         pure (renderVCD simulation)
   check "register width VCD matches golden file" (actual == Right golden)
 
+testParserAcceptsAssertion :: IO Bool
+testParserAcceptsAssertion =
+  check "parser accepts assertion declarations" $ case
+    parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 1 at 4\n" of
+      Right netlist -> netlistAssertions netlist == [Assertion "out" High 4]
+      Left _ -> False
+
+testParserRejectsInvalidAssertion :: IO Bool
+testParserRejectsInvalidAssertion =
+  check "parser rejects invalid assertions" $
+    isLeft (parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 2 at 1")
+      && isLeft (parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 1")
+      && isLeft (parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert missing = 1 at 1")
+      && isLeft (parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 1 at -2")
+      && isLeft (parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 1 at x")
+
+testAssertionPasses :: IO Bool
+testAssertionPasses = case
+  parseNetlist (unlines
+    [ "input a"
+    , "input b"
+    , "wire n"
+    , "wire y"
+    , "output y"
+    , "gate NOT inv (a) -> n"
+    , "gate AND combine (n,b) -> y"
+    , "assert y = 1 at 0"
+    , "assert y = 0 at 3"
+    , "assert y = 1 at 5"
+    ]) of
+    Left _ -> check "passing assertions produce no failures" False
+    Right netlist -> check "passing assertions produce no failures" $ case
+      simulateWithScheduledInputs netlist [("a", Low), ("b", High)]
+        [(3, "a", High), (5, "a", Low)] 6 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 3
+        Left _ -> False
+
+testAssertionFails :: IO Bool
+testAssertionFails = case
+  parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 1 at 2\n" of
+    Left _ -> check "a failing assertion is reported" False
+    Right netlist -> check "a failing assertion is reported" $ case
+      simulateWithInputs netlist [("a", High)] 3 of
+        Right simulation -> case simulationFailures simulation of
+          [failure] ->
+            failureSignal failure == "out"
+              && failureTime failure == 2
+              && failureExpected failure == High
+              && failureActual failure == Low
+          _ -> False
+        Left _ -> False
+
+testAssertionBeyondDuration :: IO Bool
+testAssertionBeyondDuration = case
+  parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 0 at 5\n" of
+    Left _ -> check "assertion times beyond duration are rejected" False
+    Right netlist -> check "assertion times beyond duration are rejected" $
+      isLeft (simulateWithInputs netlist [("a", High)] 3)
+
+testVCDCommentMetadata :: IO Bool
+testVCDCommentMetadata = case
+  parseNetlist "input a\nwire out\ngate NOT inv (a) -> out\nassert out = 1 at 2\n" of
+    Left _ -> check "VCD records assertions as comment metadata" False
+    Right netlist -> check "VCD records assertions as comment metadata" $ case
+      simulate netlist 3 of
+        Left _ -> False
+        Right simulation ->
+          all (`elem` lines (renderVCD simulation))
+            [ "$comment"
+            , "  assert out = 1 at 2"
+            , "$end"
+            ]
+
+testGoldenAssertVCD :: IO Bool
+testGoldenAssertVCD = do
+  source <- readFile "fixtures/assert.net"
+  golden <- readFile "fixtures/assert.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [("a", Low), ("b", High)]
+            [(3, "a", High), (5, "a", Low)] 6
+        pure (renderVCD simulation)
+  check "assert VCD matches golden file" (actual == Right golden)
+
 propAndCommutative :: Logical -> Logical -> Bool
 propAndCommutative (Logical left) (Logical right) =
   and2 left right == and2 right left
@@ -697,6 +802,30 @@ propEquivalentEntryPoints netlist =
         Left _ -> property False
         Right direct ->
           property (renderVCD viaScheduled == renderVCD direct)
+
+propAssertionSoundness :: Netlist -> Property
+propAssertionSoundness netlist =
+  forAll (choose (0, 30)) $ \duration ->
+    forAll (elements (netlistSignals netlist)) $ \signal ->
+      forAll (choose (0, duration)) $ \time ->
+        case simulate netlist duration of
+          Left _ -> property False
+          Right simulation ->
+            let assertTime = fromIntegral time
+                actual = valueAt simulation signal assertTime
+            in property
+                 ( assertionPasses netlist signal actual assertTime
+                     && assertionFails netlist signal (not1 actual) assertTime
+                 )
+  where
+    assertionPasses base signal value time = case
+      simulateWithScheduledInputs base {netlistAssertions = [Assertion signal value time]} [] [] 30 of
+        Right simulation -> null (simulationFailures simulation)
+        Left _ -> False
+    assertionFails base signal value time = case
+      simulateWithScheduledInputs base {netlistAssertions = [Assertion signal value time]} [] [] 30 of
+        Right simulation -> length (simulationFailures simulation) == 1
+        Left _ -> False
 
 boolToLogic :: Bool -> Logic
 boolToLogic True = High

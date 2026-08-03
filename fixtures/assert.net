@@ -1,0 +1,13 @@
+# Waveform assertion demo.
+input a
+input b
+wire n
+wire y
+output y
+
+gate NOT inv (a) -> n
+gate AND combine (n,b) -> y
+
+assert y = 1 at 0
+assert y = 0 at 3
+assert y = 1 at 5
