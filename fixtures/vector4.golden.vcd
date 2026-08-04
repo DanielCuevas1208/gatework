@@ -1,0 +1,32 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.12.0.0
+$end
+$comment
+  assert x[0] = 1 at 0
+  assert x[1] = x at 0
+  assert x[3] = 0 at 0
+  assert m[0] = 1 at 0
+  assert m[1] = x at 0
+  assert m[0] = z at 2
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 4 ! a[3:0] $end
+$var wire 4 " b[3:0] $end
+$var wire 1 # en $end
+$var wire 4 $ x[3:0] $end
+$var wire 2 % m[1:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+b0z01!
+b01x0"
+1#
+b0xx1$
+bx1%
+#2
+0#
+bzz%

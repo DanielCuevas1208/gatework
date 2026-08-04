@@ -19,6 +19,7 @@ import Gatework.Netlist
 data Simulation = Simulation
   { simulationDuration :: Time
   , simulationSignals :: [String]
+  , simulationBuses :: [(String, Int)]
   , simulationChanges :: Map String [(Time, Logic)]
   , simulationAssertions :: [Assertion]
   , simulationFailures :: [AssertionFailure]
@@ -215,9 +216,10 @@ clockValue clock time =
 runQueue :: Netlist -> Map String [Gate] -> Map String [Gate] -> Time -> EventQueue -> State -> Changes
   -> Either String Simulation
 runQueue netlist byOutput byInput duration queue state changes = case Map.minViewWithKey queue of
-  Nothing -> Right (Simulation duration (netlistSignals netlist) changes [] [])
+  Nothing -> Right (Simulation duration (netlistSignals netlist) (netlistBusWidths netlist) changes [] [])
   Just ((time, pending), remaining)
-    | time > duration -> Right (Simulation duration (netlistSignals netlist) changes [] [])
+    | time > duration ->
+        Right (Simulation duration (netlistSignals netlist) (netlistBusWidths netlist) changes [] [])
     | otherwise -> do
         (nextQueue, nextState, nextChanges) <-
           settleAtTime netlist byOutput byInput duration time pending remaining state changes 0

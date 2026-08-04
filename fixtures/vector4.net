@@ -1,0 +1,17 @@
+# Four-state values inside multi-bit VCD vectors.
+input a[4]
+input b[4]
+output x[4]
+wire x[4]
+input en
+output m[2]
+wire m[2]
+gate XOR combine (a,b) -> x
+gate TRIBUF drive0 (a[0],en) -> m[0]
+gate TRIBUF drive1 (b[1],en) -> m[1]
+assert x[0] = 1 at 0
+assert x[1] = x at 0
+assert x[3] = 0 at 0
+assert m[0] = 1 at 0
+assert m[1] = x at 0
+assert m[0] = z at 2

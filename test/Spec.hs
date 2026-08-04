@@ -6,7 +6,7 @@ import Data.Char (isSpace)
 import Data.Either (isLeft)
 import Data.List (elemIndex, find, foldl', isPrefixOf, nub, sort, sortOn)
 import qualified Data.Map.Strict as Map
-import Gatework.Logic (GateType (..), Logic (..), evalGate, parseLogic)
+import Gatework.Logic (GateType (..), Logic (..), evalGate, logicChar, parseLogic)
 import Gatework.Netlist
   ( Assertion (..)
   , Netlist (..)
@@ -274,6 +274,11 @@ main = do
     , testWholeBusScalarValue
     , testWholeBusScheduledRegister
     , testWholeBusGoldenVCD
+    , testVCDVectorHeader
+    , testVCDVectorTimeline
+    , testVCDVectorFourState
+    , testVCDVectorModuleBus
+    , testGoldenVector4VCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -320,6 +325,7 @@ main = do
     , ("library adder matches the flat adder", quickCheckResult (propLibraryAdderMatchesFlat adder libadder))
     , ("counter report matches the waveform", quickCheckResult (propCounterReportMatchesWaveform counter))
     , ("whole-bus values match per-bit values", quickCheckResult propWholeBusMatchesBitwise)
+    , ("VCD vectors match the per-bit waveform", quickCheckResult propVCDVectorMatchesBits)
     ]
     $ \(label, action) -> do
       result <- action
@@ -1958,6 +1964,148 @@ testWholeBusGoldenVCD = do
         pure (renderVCD simulation)
   check "whole-bus VCD matches golden file" (actual == Right golden)
 
+vectorInverter :: Either String Netlist
+vectorInverter = parseNetlist (unlines
+  [ "input a[4]"
+  , "output y[4]"
+  , "wire y[4]"
+  , "gate NOT inv (a) -> y"
+  ])
+
+testVCDVectorHeader :: IO Bool
+testVCDVectorHeader = case vectorInverter of
+  Left _ -> check "VCD declares buses as multi-bit vectors" False
+  Right netlist -> case simulate netlist 0 of
+    Left _ -> check "VCD declares buses as multi-bit vectors" False
+    Right simulation ->
+      let text = renderVCD simulation
+      in check "VCD declares buses as multi-bit vectors" $ case parseVcd text of
+        Just vars ->
+          any (\var -> vcdVarName var == "a" && vcdVarWidth var == 4) vars
+            && any (\var -> vcdVarName var == "y" && vcdVarWidth var == 4) vars
+            && "$var wire 4 ! a[3:0] $end" `elem` lines text
+            && "$var wire 4 \" y[3:0] $end" `elem` lines text
+        Nothing -> False
+
+testVCDVectorTimeline :: IO Bool
+testVCDVectorTimeline = case vectorInverter of
+  Left _ -> check "VCD timelines group bus values" False
+  Right netlist -> case
+    simulateWithInputs netlist
+      [("a[0]", High), ("a[1]", Low), ("a[2]", High), ("a[3]", Low)] 0 of
+      Left _ -> check "VCD timelines group bus values" False
+      Right simulation ->
+        let text = renderVCD simulation
+        in check "VCD timelines group bus values" $ case
+          (parseVcd text, parseVcdTimeline text) of
+            (Just vars, timeline) ->
+              vcdValueAt vars timeline "a" 0 == Just "0101"
+                && vcdValueAt vars timeline "y" 0 == Just "1010"
+                && "b0101!" `elem` lines text
+                && "b1010\"" `elem` lines text
+            (Nothing, _) -> False
+
+testVCDVectorFourState :: IO Bool
+testVCDVectorFourState = do
+  source <- readFile "fixtures/vector4.net"
+  case parseNetlist source of
+    Left _ -> check "VCD vectors render x and z" False
+    Right netlist -> check "VCD vectors render x and z" $ case
+      resolveInputAssignments netlist [("a", "0z01"), ("b", "01x0"), ("en", "1")] of
+        Left _ -> False
+        Right overrides -> case
+          simulateWithScheduledInputs netlist overrides [(2, "en", Low)] 2 of
+            Left _ -> False
+            Right simulation ->
+              let text = renderVCD simulation
+              in case (parseVcd text, parseVcdTimeline text) of
+                (Just vars, timeline) ->
+                  vcdValueAt vars timeline "x" 0 == Just "0xx1"
+                    && vcdValueAt vars timeline "m" 0 == Just "x1"
+                    && vcdValueAt vars timeline "m" 2 == Just "zz"
+                    && "b0xx1$" `elem` lines text
+                    && "bzz%" `elem` lines text
+                (Nothing, _) -> False
+
+testVCDVectorModuleBus :: IO Bool
+testVCDVectorModuleBus = case parseNetlist (unlines
+  [ "module double (a[4]) -> (y[4])"
+  , "  wire t[4]"
+  , "  gate NOT first (a) -> t"
+  , "  gate NOT second (t) -> y"
+  , "end"
+  , "input a[4]"
+  , "output y[4]"
+  , "wire y[4]"
+  , "instance double u (a) -> (y)"
+  ]) of
+  Left _ -> check "module buses render as vectors" False
+  Right netlist -> check "module buses render as vectors" $ case simulate netlist 0 of
+    Left _ -> False
+    Right simulation -> case parseVcd (renderVCD simulation) of
+      Just vars ->
+        any (\var -> vcdVarName var == "u.t" && vcdVarWidth var == 4) vars
+      Nothing -> False
+
+testGoldenVector4VCD :: IO Bool
+testGoldenVector4VCD = do
+  source <- readFile "fixtures/vector4.net"
+  golden <- readFile "fixtures/vector4.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        overrides <- resolveInputAssignments netlist [("a", "0z01"), ("b", "01x0"), ("en", "1")]
+        simulation <- simulateWithScheduledInputs netlist overrides [(2, "en", Low)] 2
+        pure (renderVCD simulation)
+  check "vector4 VCD matches golden file" (actual == Right golden)
+
+data VcdVar = VcdVar
+  { vcdVarName :: String
+  , vcdVarId :: String
+  , vcdVarWidth :: Int
+  }
+  deriving (Eq, Show)
+
+parseVcd :: String -> Maybe [VcdVar]
+parseVcd text = mapM parseVar declarations
+  where
+    declarations = [words line | line <- lines text, "$var" `isPrefixOf` line]
+    parseVar tokens = case tokens of
+      ["$var", "wire", widthText, identifier, name, "$end"] -> do
+        width <- readMaybe widthText
+        pure (VcdVar (baseOf name) identifier width)
+      _ -> Nothing
+    baseOf name = case break (== '[') name of
+      (base, _) -> base
+
+parseVcdTimeline :: String -> [(Time, [(String, String)])]
+parseVcdTimeline text = reverse (go [] (lines text))
+  where
+    go acc [] = acc
+    go acc (line : rest)
+      | '#' : timeText <- line
+      , Just time <- readMaybe timeText = go ((time, []) : acc) rest
+      | (identifier, value) <- parseValueLine line
+      , not (null identifier)
+      , (time, entries) : tailAcc <- acc = go ((time, (identifier, value) : entries) : tailAcc) rest
+      | otherwise = go acc rest
+    parseValueLine line = case line of
+      'b' : rest
+        | not (null rest) ->
+            let (valueText, identifier) = span (`elem` "01xzXZ") rest
+            in (identifier, valueText)
+      'B' : rest ->
+        let (valueText, identifier) = span (`elem` "01xzXZ") rest
+        in (identifier, valueText)
+      valueChar : identifier
+        | valueChar `elem` "01xzXZ" -> (identifier, [valueChar])
+      _ -> ("", "")
+
+vcdValueAt :: [VcdVar] -> [(Time, [(String, String)])] -> String -> Time -> Maybe String
+vcdValueAt vars timeline name time = do
+  var <- find ((== name) . vcdVarName) vars
+  (_, entries) <- find ((== time) . fst) timeline
+  lookup (vcdVarId var) entries
+
 splitOn :: Char -> String -> [String]
 splitOn delimiter value = case break (== delimiter) value of
   (part, _ : rest) -> part : splitOn delimiter rest
@@ -2283,6 +2431,42 @@ propWholeBusMatchesBitwise =
                 (Right wholeSim, Right bitSim) ->
                   property (renderVCD wholeSim == renderVCD bitSim)
                 _ -> property False
+
+propVCDVectorMatchesBits :: Property
+propVCDVectorMatchesBits =
+  forAll (choose (0, 15)) $ \aValue ->
+    forAll (choose (0, 15)) $ \bValue ->
+      case busXorNetlist of
+        Left _ -> property False
+        Right netlist ->
+          case simulateWithInputs netlist (busInputs "a" aValue 4 ++ busInputs "b" bValue 4) 0 of
+            Left _ -> property False
+            Right simulation ->
+              let text = renderVCD simulation
+              in case parseVcd text of
+                Nothing -> property False
+                Just vars -> case parseVcdTimeline text of
+                  [] -> property False
+                  timeline ->
+                    property (all (varMatches simulation timeline) vars)
+  where
+    varMatches simulation timeline var =
+      all (entryMatches simulation var) timeline
+    entryMatches simulation var (time, entries) =
+      case lookup (vcdVarId var) entries of
+        Nothing -> True
+        Just valueText -> valueText == expectedValue simulation var time
+    expectedValue simulation var time
+      | vcdVarWidth var == 1 = [logicChar (valueAt simulation (vcdVarName var) time)]
+      | otherwise =
+          [ logicChar (valueAt simulation (bitName (vcdVarName var) (vcdVarWidth var) index) time)
+          | index <- [vcdVarWidth var - 1, vcdVarWidth var - 2 .. 0]
+          ]
+
+bitName :: String -> Int -> Int -> String
+bitName base width index
+  | width <= 1 = base
+  | otherwise = base ++ "[" ++ show index ++ "]"
 
 propGatesFixture :: Netlist -> Property
 propGatesFixture netlist =
