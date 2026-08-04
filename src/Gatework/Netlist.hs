@@ -45,6 +45,7 @@ data DFlipFlop = DFlipFlop
   , dffOutput :: [String]
   , dffInitial :: [Logic]
   , dffReset :: Maybe String
+  , dffClockToOutput :: Int
   }
   deriving (Eq, Show)
 
@@ -115,7 +116,7 @@ data RawDeclaration
   | RawWire String Int
   | RawClock Clock
   | RawGate GateType String [Ref] Ref Int Int
-  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref)
+  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref) (Maybe String)
   | RawAssert Ref Logic Time
   | RawInstance String String [Ref] [Ref]
   deriving (Eq, Show)
@@ -330,10 +331,13 @@ parseLine (lineNumber, line) = case words line of
       Left (lineError lineNumber "dff requires at least one data input")
     let initText = lookup "init" parsedFields
         widthText = lookup "width" parsedFields
+        tcoText = lookup "tco" parsedFields
+    unless (length [field | field <- parsedFields, fst field == "tco"] <= 1) $
+      Left (lineError lineNumber "dff tco field cannot repeat")
     reset <- case lookup "rst" parsedFields of
       Nothing -> Right Nothing
       Just value -> Just <$> parseRef lineNumber value
-    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset)
+    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset tcoText)
   ["assert", signal, "=", value, "at", timeText] -> do
     signalRef <- parseRef lineNumber signal
     logic <- maybe
@@ -423,7 +427,7 @@ parseRefList lineNumber key value = do
 parseField :: Int -> String -> Either String (String, String)
 parseField lineNumber field = case break (== '=') field of
   (key, '=' : value)
-    | key `elem` ["clock", "d", "q", "init", "rst", "width"] && not (null value) -> Right (key, value)
+    | key `elem` ["clock", "d", "q", "init", "rst", "width", "tco"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
 
 data DelayField = DelayField | RiseField | FallField
@@ -560,8 +564,8 @@ resolveDeclaration signatureModules widths declaration = case declaration of
   RawClock clock -> Right [ClockDeclaration clock]
   RawGate gateKind name inputRefs outputRef riseDelay fallDelay ->
     resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay
-  RawDff name clockRef dataRefs outRefs initText widthText resetRef ->
-    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef
+  RawDff name clockRef dataRefs outRefs initText widthText resetRef tcoText ->
+    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef tcoText
   RawAssert signalRef value time -> resolveAssertion widths signalRef value time
   RawInstance name targetModule inputRefs outputRefs ->
     resolveInstance signatureModules widths name targetModule inputRefs outputRefs
@@ -587,9 +591,9 @@ resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay = do
     | index <- [0 .. width - 1]
     ]
 
-resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref
+resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref -> Maybe String
   -> Either String [Declaration]
-resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef = do
+resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef tcoText = do
   clockName <- case resolveRef widths clockRef of
     Left message -> Left message
     Right [signal] -> Right signal
@@ -608,6 +612,7 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef = d
       unless (declaredWidth == width) $
         Left ("dff " ++ name ++ " width must match the data width")
   initList <- parseInitValues width initText
+  clockToOutput <- parseClockToOutput tcoText
   resetSignal <- case resetRef of
     Nothing -> Right Nothing
     Just ref -> case resolveRef widths ref of
@@ -622,7 +627,8 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef = d
           [dataBits !! index]
           [outputBits !! index]
           [initList !! index]
-          resetSignal)
+          resetSignal
+          clockToOutput)
     | index <- [0 .. width - 1]
     ]
 
@@ -725,6 +731,13 @@ parseInt :: String -> Either String Int
 parseInt token = case reads token of
   [(number, "")] -> Right number
   _ -> Left "width must be an integer"
+
+parseClockToOutput :: Maybe String -> Either String Int
+parseClockToOutput text = case text of
+  Nothing -> Right 0
+  Just token -> case reads token of
+    [(number, "")] | number >= 0 -> Right number
+    _ -> Left ("dff tco must be a non-negative integer: " ++ token)
 
 validateNetlist :: Netlist -> Either String Netlist
 validateNetlist netlist = do

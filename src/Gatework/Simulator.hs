@@ -10,7 +10,7 @@ module Gatework.Simulator
   , simulateWithScheduledInputs
   ) where
 
-import Data.List (foldl', nub)
+import Data.List (foldl', nub, sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Gatework.Logic
@@ -295,14 +295,15 @@ processSignalEvent netlist byInput duration time signal value pending queue stat
           let nextState = state {simWireValues = Map.insert signal value (simWireValues state)}
               nextChanges = recordChange time signal value changes
               commits = commitsForChanged byInput (simDrivers nextState) (simWireValues nextState) [signal]
-              flipFlopEvents =
+              (flipFlopEvents, scheduledQueue) =
                 if oldValue == Low && value == High
-                  then [FlipFlopBatch (edgeSamples netlist signal (simWireValues nextState))]
-                  else []
-              (immediate, scheduledQueue) =
-                scheduleCommits time queue commits (simWireValues nextState)
+                  then scheduleFlipFlopSamples time queue
+                    (edgeSamples netlist signal (simWireValues nextState))
+                  else ([], queue)
+              (immediate, nextQueue) =
+                scheduleCommits time scheduledQueue commits (simWireValues nextState)
           in settleAtTime netlist byInput duration time (pending ++ flipFlopEvents ++ immediate)
-               scheduledQueue nextState nextChanges (steps + 1)
+               nextQueue nextState nextChanges (steps + 1)
 
 processFlipFlopBatch :: Netlist -> Map String [Gate] -> Time -> Time
   -> [(DFlipFlop, Int, Logic)] -> [Pending] -> EventQueue -> SimState -> Changes -> Int
@@ -326,8 +327,26 @@ processFlipFlopBatch netlist byInput duration time samples pending queue state c
               , changed ++ [output]
               )
 
-processGateCommit :: Netlist -> Map String [Gate] -> Time -> Time
-  -> Gate -> [Pending] -> EventQueue -> SimState -> Changes -> Int
+scheduleFlipFlopSamples :: Time -> EventQueue -> [(DFlipFlop, Int, Logic)]
+  -> ([Pending], EventQueue)
+scheduleFlipFlopSamples time queue samples =
+  foldl' step ([], queue) groups
+  where
+    groups =
+      [ (delay, [sample | sample <- samples, dffClockToOutput (flopOf sample) == delay])
+      | delay <- sort (nub (map (dffClockToOutput . flopOf) samples))
+      ]
+    flopOf (flipFlop, _, _) = flipFlop
+    step (immediate, currentQueue) (delay, group)
+      | delay == 0 =
+          (immediate ++ [FlipFlopBatch group], currentQueue)
+      | otherwise =
+          ( immediate
+          , Map.insertWith (flip (++))
+              (time + fromIntegral delay) [FlipFlopBatch group] currentQueue
+          )
+
+processGateCommit :: Netlist -> Map String [Gate] -> Time -> Time -> Gate -> [Pending] -> EventQueue -> SimState -> Changes -> Int
   -> Either String (EventQueue, SimState, Changes)
 processGateCommit netlist byInput duration time gate pending queue state changes steps
   | value == currentContribution (simDrivers state) gate =

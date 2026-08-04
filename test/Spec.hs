@@ -11,6 +11,7 @@ import Gatework.Netlist
   ( Assertion (..)
   , Gate (..)
   , Netlist (..)
+  , dffClockToOutput
   , netlistAssertions
   , netlistSignals
   , parseNetlist
@@ -298,6 +299,14 @@ main = do
     , testVCDVectorModuleBus
     , testGoldenVector4VCD
     , testGoldenDelayVCD
+    , testParserAcceptsClockToOutputDelay
+    , testParserRejectsInvalidClockToOutputDelay
+    , testClockToOutputDelaysOutput
+    , testClockToOutputCaptureAtEdge
+    , testClockToOutputResetDelayed
+    , testClockToOutputZeroKeepsImmediate
+    , testClockToOutputRegisterWidth
+    , testGoldenClockToOutputVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -347,6 +356,7 @@ main = do
     , ("counter report matches the waveform", quickCheckResult (propCounterReportMatchesWaveform counter))
     , ("whole-bus values match per-bit values", quickCheckResult propWholeBusMatchesBitwise)
     , ("VCD vectors match the per-bit waveform", quickCheckResult propVCDVectorMatchesBits)
+    , ("clock-to-output delays match a reference model", quickCheckResult propClockToOutputMatchesReference)
     ]
     $ \(label, action) -> do
       result <- action
@@ -2306,6 +2316,130 @@ testGoldenDelayVCD = do
         pure (renderVCD simulation)
   check "delay VCD matches golden file" (actual == Right golden)
 
+testParserAcceptsClockToOutputDelay :: IO Bool
+testParserAcceptsClockToOutputDelay = case
+  parseNetlist (unlines
+    [ "input d"
+    , "output q"
+    , "clock clk period=4"
+    , "dff state clock=clk d=d q=q init=0 tco=3"
+    ]) of
+    Left _ -> check "parser accepts a clock-to-output delay" False
+    Right netlist -> check "parser accepts a clock-to-output delay" $
+      case netlistFlipFlops netlist of
+        [flipFlop] -> dffClockToOutput flipFlop == 3
+        _ -> False
+
+testParserRejectsInvalidClockToOutputDelay :: IO Bool
+testParserRejectsInvalidClockToOutputDelay =
+  check "parser rejects invalid clock-to-output delays" $
+    isLeft (parseNetlist (unlines
+      [ "input d"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q init=0 tco=-1"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "input d"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q init=0 tco=fast"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "input d"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q init=0 tco=1 tco=2"
+      ]))
+
+testClockToOutputDelaysOutput :: IO Bool
+testClockToOutputDelaysOutput =
+  let netlist =
+        parseNetlist "input d\noutput q\nclock clk period=4\ndff state clock=clk d=d q=q init=0 tco=2"
+  in case netlist of
+    Left _ -> check "a flip-flop output commits after its tco delay" False
+    Right parsed -> check "a flip-flop output commits after its tco delay" $ case
+      simulateWithInputs parsed [("d", High)] 5 of
+        Right simulation -> signalChanges simulation "q" == [(0, Low), (4, High)]
+        Left _ -> False
+
+testClockToOutputCaptureAtEdge :: IO Bool
+testClockToOutputCaptureAtEdge =
+  let netlist =
+        parseNetlist "input d\noutput q\nclock clk period=4\ndff state clock=clk d=d q=q init=0 tco=2"
+  in case netlist of
+    Left _ -> check "a flip-flop captures data at the clock edge" False
+    Right parsed -> check "a flip-flop captures data at the clock edge" $ case
+      simulateWithScheduledInputs parsed [("d", High)] [(3, "d", Low)] 5 of
+        Right simulation ->
+          valueAt simulation "d" 3 == Low
+            && valueAt simulation "q" 3 == Low
+            && valueAt simulation "q" 4 == High
+            && valueAt simulation "q" 5 == High
+        Left _ -> False
+
+testClockToOutputResetDelayed :: IO Bool
+testClockToOutputResetDelayed =
+  let netlist =
+        parseNetlist (unlines
+          [ "input d"
+          , "input rst"
+          , "output q"
+          , "clock clk period=4"
+          , "dff state clock=clk d=d q=q init=0 tco=2 rst=rst"
+          ])
+  in case netlist of
+    Left _ -> check "an asserted reset commits after the tco delay" False
+    Right parsed -> check "an asserted reset commits after the tco delay" $ case
+      simulateWithScheduledInputs parsed [("d", High)] [(3, "rst", High)] 6 of
+        Right simulation ->
+          signalChanges simulation "q" == [(0, Low), (4, High), (5, Low)]
+        Left _ -> False
+
+testClockToOutputZeroKeepsImmediate :: IO Bool
+testClockToOutputZeroKeepsImmediate =
+  let netlist =
+        parseNetlist "input d\noutput q\nclock clk period=4\ndff state clock=clk d=d q=q init=0 tco=0"
+  in case netlist of
+    Left _ -> check "tco=0 keeps the immediate output" False
+    Right parsed -> check "tco=0 keeps the immediate output" $ case
+      simulateWithInputs parsed [("d", High)] 4 of
+        Right simulation -> signalChanges simulation "q" == [(0, Low), (2, High)]
+        Left _ -> False
+
+testClockToOutputRegisterWidth :: IO Bool
+testClockToOutputRegisterWidth =
+  let netlist =
+        parseNetlist (unlines
+          [ "input d0"
+          , "input d1"
+          , "output q0"
+          , "output q1"
+          , "clock clk period=4"
+          , "dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 tco=3"
+          ])
+  in case netlist of
+    Left _ -> check "a wide register commits all bits after its tco" False
+    Right parsed -> check "a wide register commits all bits after its tco" $ case
+      simulateWithInputs parsed [("d0", High), ("d1", High)] 6 of
+        Right simulation ->
+          signalChanges simulation "q0" == [(0, Low), (5, High)]
+            && signalChanges simulation "q1" == [(0, Low), (5, High)]
+        Left _ -> False
+
+testGoldenClockToOutputVCD :: IO Bool
+testGoldenClockToOutputVCD = do
+  source <- readFile "fixtures/tco.net"
+  golden <- readFile "fixtures/tco.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        overrides <- resolveInputAssignments netlist [("d", "1")]
+        simulation <-
+          simulateWithScheduledInputs netlist overrides
+            [(4, "d", Low), (8, "d", High), (14, "rst", High), (16, "rst", Low)] 22
+        pure (renderVCD simulation)
+  check "tco VCD matches golden file" (actual == Right golden)
+
 data VcdVar = VcdVar
   { vcdVarName :: String
   , vcdVarId :: String
@@ -2991,6 +3125,54 @@ propRegisterWidthSampling netlist =
       let edgeTime = 2 * fromIntegral k + 1
           nextQ = boolToLogic value
       in (nextQ, if nextQ == oldQ then acc else (edgeTime, nextQ) : acc)
+
+propClockToOutputMatchesReference :: Property
+propClockToOutputMatchesReference =
+  forAll (choose (0 :: Int, 3)) $ \tco ->
+    forAll (elements [3 :: Int, 5]) $ \halfPeriod ->
+      forAll (choose (0 :: Int, 5)) $ \count ->
+        forAll (vector count) $ \dataValues ->
+          forAll (elements [Low, High]) $ \initialData ->
+            forAll (choose (0 :: Int, 40)) $ \query ->
+              let changes =
+                    [ (2 * k, boolToLogic value)
+                    | (k, value) <- zip [1 :: Int ..] dataValues
+                    ]
+                  source = unlines
+                    [ "input d"
+                    , "output q"
+                    , "clock clk period=" ++ show (2 * halfPeriod)
+                    , "dff state clock=clk d=d q=q init=0 tco=" ++ show tco
+                    ]
+              in case parseNetlist source of
+                   Left _ -> property False
+                   Right netlist ->
+                     case simulateWithScheduledInputs netlist [("d", initialData)]
+                       [(fromIntegral time, "d", value) | (time, value) <- changes] 40 of
+                       Left _ -> property False
+                       Right simulation ->
+                         property
+                           ( all (matches simulation tco halfPeriod initialData changes) [0 .. query]
+                           )
+  where
+    matches :: Simulation -> Int -> Int -> Logic -> [(Int, Logic)] -> Int -> Bool
+    matches simulation tco halfPeriod initialData changes time =
+      let expected
+            | time < tco = Low
+            | otherwise =
+                referenceNoDelay halfPeriod initialData changes (time - tco)
+      in valueAt simulation "q" (fromIntegral time) == expected
+    referenceNoDelay :: Int -> Logic -> [(Int, Logic)] -> Int -> Logic
+    referenceNoDelay halfPeriod initialData changes sampleTime =
+      case [capturedAt edge | edge <- edges halfPeriod sampleTime] of
+        [] -> Low
+        captures -> last captures
+      where
+        capturedAt edge = last (initialData : [value | (time, value) <- changes, time <= edge])
+    edges :: Int -> Int -> [Int]
+    edges halfPeriod sampleTime =
+      takeWhile (\edge -> edge <= sampleTime)
+        [(2 * k + 1) * halfPeriod | k <- [0 :: Int ..]]
 
 propEquivalentEntryPoints :: Netlist -> Property
 propEquivalentEntryPoints netlist =
