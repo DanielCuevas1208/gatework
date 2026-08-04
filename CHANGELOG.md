@@ -5,6 +5,23 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.17.0.0] - 2026-08-04
+
+### Added
+
+- Add the `MUX` gate with `(d0,d1,sel)` inputs.
+- Select `d0` when `sel` is low.
+- Select `d1` when `sel` is high.
+- Resolve an unknown selector to the common branch value when both branches agree.
+- Convert floating selected data to unknown.
+- Support `MUX` on buses, modules, and delayed gate paths.
+- Add a multiplexer waveform fixture, golden VCD, deterministic tests, and a QuickCheck property.
+
+### Fixed
+
+- Add the missing final newline to the buffer golden VCD.
+- Bump the package version to 0.17.0.0.
+
 ## [0.16.0.0] - 2026-08-04
 
 ### Added

@@ -162,6 +162,10 @@ main = do
     , testBufferFixture
     , testBufferBus
     , testGoldenBufferVCD
+    , testMuxTruth
+    , testMuxFixture
+    , testMuxBus
+    , testGoldenMuxVCD
     , testParserRejectsUnknownGate
     , testParserRejectsWrongArity
     , testParserRejectsEmptyInputs
@@ -348,6 +352,7 @@ main = do
     , ("undefined inputs commute in binary gates", quickCheckResult propUndefinedCommutative)
     , ("TRIBUF follows its truth table", quickCheckResult propTribufTruth)
     , ("BUF follows its four-state truth table", quickCheckResult propBufferTruth)
+    , ("MUX follows its four-state selection table", quickCheckResult propMuxTruth)
     , ("an enabled buffer passes known data", quickCheckResult propTribufEnable)
     , ("tri-state fixture stays consistent", quickCheckResult (propTribufFixtureSound tristate))
     , ("unknown fixture starts unclocked", quickCheckResult (propUnknownFixtureSampling unknown))
@@ -1187,6 +1192,86 @@ testGoldenBufferVCD = do
             [(2, "d", High), (4, "d", Low), (6, "d", TriState)] 8
         pure (renderVCD simulation)
   check "buffer VCD matches golden file" (actual == Right golden)
+
+testMuxTruth :: IO Bool
+testMuxTruth =
+  check "MUX selects data and resolves equal unknown branches" $
+    and
+      [ evalGate Mux [Low, High, Low] == Low
+      , evalGate Mux [Low, High, High] == High
+      , evalGate Mux [Low, High, Undefined] == Undefined
+      , evalGate Mux [High, High, Undefined] == High
+      , evalGate Mux [TriState, TriState, TriState] == Undefined
+      , evalGate Mux [TriState, High, Low] == Undefined
+      , evalGate Mux [Low, High] == Undefined
+      ]
+
+testMuxFixture :: IO Bool
+testMuxFixture = do
+  source <- readFile "fixtures/mux.net"
+  case parseNetlist source of
+    Left _ -> check "mux fixture simulates selection and delay" False
+    Right netlist -> check "mux fixture simulates selection and delay" $ case
+      simulateWithScheduledInputs netlist
+        [("d0", Low), ("d1", High), ("sel", Low)]
+        [ (2, "sel", High)
+        , (4, "sel", Undefined)
+        , (6, "d0", High)
+        , (6, "d1", High)
+        , (8, "sel", TriState)
+        ]
+        10 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 9
+            && valueAt simulation "y" 0 == Low
+            && valueAt simulation "y" 2 == High
+            && valueAt simulation "y" 4 == Undefined
+            && valueAt simulation "y" 6 == High
+            && valueAt simulation "delayed" 2 == Low
+            && valueAt simulation "delayed" 4 == High
+            && valueAt simulation "delayed" 6 == Undefined
+            && valueAt simulation "delayed" 8 == High
+        Left _ -> False
+
+testMuxBus :: IO Bool
+testMuxBus = case parseNetlist (unlines
+  [ "input a[4]"
+  , "input b[4]"
+  , "input sel[4]"
+  , "output y[4]"
+  , "wire y[4]"
+  , "gate MUX choose (a,b,sel) -> y"
+  ]) of
+  Left _ -> check "MUX applies selection bitwise across a bus" False
+  Right netlist -> check "MUX applies selection bitwise across a bus" $ case
+    simulateWithInputs netlist
+      (busInputs "a" 9 4 ++ busInputs "b" 6 4 ++ busInputs "sel" 3 4)
+      0 of
+      Right simulation ->
+        valueAt simulation "y[0]" 0 == Low
+          && valueAt simulation "y[1]" 0 == High
+          && valueAt simulation "y[2]" 0 == Low
+          && valueAt simulation "y[3]" 0 == High
+      Left _ -> False
+
+testGoldenMuxVCD :: IO Bool
+testGoldenMuxVCD = do
+  source <- readFile "fixtures/mux.net"
+  golden <- readFile "fixtures/mux.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithScheduledInputs netlist
+          [("d0", Low), ("d1", High), ("sel", Low)]
+          [ (2, "sel", High)
+          , (4, "sel", Undefined)
+          , (6, "d0", High)
+          , (6, "d1", High)
+          , (8, "sel", TriState)
+          ]
+          10
+        pure (renderVCD simulation)
+  check "mux VCD matches golden file" (actual == Right golden)
 
 testGatesFixture :: IO Bool
 testGatesFixture = do
@@ -2628,6 +2713,22 @@ propTribufEnable (Known dataValue) =
 propBufferTruth :: FourState -> Bool
 propBufferTruth (FourState value) =
   evalGate Buf [value] == if value == TriState then Undefined else value
+
+propMuxTruth :: FourState -> FourState -> FourState -> Bool
+propMuxTruth (FourState lowData) (FourState highData) (FourState select) =
+  evalGate Mux [lowData, highData, select] == expected
+  where
+    expected = case select of
+      Low -> normalize lowData
+      High -> normalize highData
+      Undefined -> commonValue
+      TriState -> commonValue
+    commonValue =
+      let normalizedLow = normalize lowData
+          normalizedHigh = normalize highData
+      in if normalizedLow == normalizedHigh then normalizedLow else Undefined
+    normalize TriState = Undefined
+    normalize value = value
 
 propTribufFixtureSound :: Netlist -> Property
 propTribufFixtureSound netlist =
