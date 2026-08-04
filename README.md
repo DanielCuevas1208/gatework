@@ -48,6 +48,9 @@ You can do these tasks:
 - Read a whole bus as one multi-bit VCD vector.
 - See unknown and floating values inside a VCD vector.
 - Group module-internal buses into VCD vectors too.
+- Declare a gate output delay with the `delay=N` field.
+- Watch a gate transition fire after its declared delay.
+- Let gate delays accumulate through a chain of gates.
 
 ## Architecture
 
@@ -78,7 +81,10 @@ The parser expands each instance into the module gates.
 The parser expands each bus into single-bit signals before simulation.
 The flattened netlist uses dotted names for instance signals.
 The scheduler processes only changed signals.
+The scheduler tracks one committed contribution per gate driver.
 The scheduler resolves several gate drivers into one wire value.
+A delayed gate commits its new value after its delay elapses.
+A gate delay accumulates through a chain of gates.
 A rising clock edge samples attached flip-flops together.
 An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
@@ -469,6 +475,46 @@ The `NOT` gate shows the unknown until the flip-flop samples data.
 | 3 | 1 | 1 | 0 |
 | 5 | 0 | 0 | 1 |
 
+## Gate delay demo
+
+Run two inverters with gate delays.
+
+```powershell
+cabal run gatework -- --netlist fixtures/delay.net --duration 12 --output delay.vcd --set a=0 --at 2 a=1 --at 6 a=0
+```
+
+The command writes this output:
+
+```text
+Wrote delay.vcd
+Signals: 3
+Duration: 12 time units
+Assertions: 7 passed
+```
+
+The first inverter delays its output by two time units.
+The second inverter delays its output by three time units.
+An input change reaches the first output two units later.
+The change reaches the second output three units after that.
+
+| Time | a | x | y |
+| --- | --- | --- | --- |
+| 0 | 0 | 1 | 0 |
+| 2 | 1 | 1 | 0 |
+| 4 | 1 | 0 | 0 |
+| 6 | 0 | 0 | 0 |
+| 7 | 0 | 0 | 1 |
+| 8 | 0 | 1 | 1 |
+| 11 | 0 | 1 | 0 |
+
+The input `a` rises at time 2.
+The signal `x` falls at time 4, two units later.
+The signal `y` rises at time 7, three units after `x`.
+The input `a` falls at time 6.
+The signal `x` rises at time 8.
+The signal `y` falls at time 11.
+The initial state settles at time zero without delay.
+
 ## Bus demo
 
 Run four-bit bus operations with gates and a register.
@@ -750,6 +796,29 @@ A gate reads a `z` input as unknown.
 gate TRIBUF driver (d,en) -> y
 ```
 
+### Gate delays
+
+A gate can delay its output transitions.
+Use the `delay=N` field after the output.
+The value N must be a non-negative integer.
+The default delay is zero.
+
+```text
+gate NOT slow (a) -> y delay=2
+gate NOT slower (y) -> z delay=3
+```
+
+The delay applies to both rising and falling transitions.
+An input change fires the gate output N time units later.
+A chain of gates adds the delays together.
+The example output `y` changes two units after `a`.
+The output `z` changes three units after `y`.
+
+The initial state settles at time zero without delay.
+Events at time zero ignore the gate delay.
+A delay field cannot repeat on one gate.
+An unknown gate field is an error.
+
 ### Multiple drivers
 
 One wire can have many gate drivers.
@@ -970,12 +1039,15 @@ Deterministic tests also cover module library loading, cross-library module refe
 Deterministic tests also cover the report command, its header order, its counter table, and its golden output.
 Deterministic tests also cover whole-bus input values, their bit order, their error cases, scheduled whole-bus transitions, and their golden output.
 Deterministic tests also cover VCD vectors, their header declarations, their grouped values, four-state vector values, and module-internal bus vectors.
+Deterministic tests also cover gate delay parsing and invalid delay fields.
+Deterministic tests also cover delayed transitions, delay accumulation, zero-delay behavior, multi-driver delays, and the initial settle.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
 QuickCheck properties also compare a bus circuit with a bitwise reference model.
 QuickCheck properties also compare the shared bus with a per-time resolution model.
 QuickCheck properties also compare a library adder with its flat version.
+QuickCheck properties also compare a delayed gate with a per-time reference model.
 QuickCheck properties also compare the counter report with the simulated waveform.
 QuickCheck properties also compare whole-bus input values with per-bit reference values.
 QuickCheck properties also compare every VCD vector value with the per-bit waveform.
@@ -998,18 +1070,21 @@ The shared-bus property compares each resolved wire value with a per-time model.
 The library adder property compares a library netlist with the flat adder.
 The counter report property compares each report cell with the simulated value.
 The VCD vector property compares each vector value with the per-bit values at that time.
+The delayed-gate property compares each output sample with the reference input time.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the counter, register, reset, two-bit register, assertion, gate, hierarchical adder, library adder, hierarchical counter, adder, tri-state, undefined-state, bus, shared-bus, and four-state vector VCD text.
+Golden tests compare each fixture VCD with its golden file.
 The golden report test compares the counter report table with its golden file.
 CI runs every demo and compares its output with the golden file.
 CI runs the report demo and compares it with the report golden file.
 CI runs the bus demo with whole-bus input values.
 CI runs the four-state vector demo and compares it with its golden file.
+CI runs the gate delay demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
+CI confirms that an invalid gate delay stops the run.
 
 ## Limitations
 
@@ -1022,7 +1097,12 @@ A low and a high together give x.
 A flip-flop output stays exclusive to its flip-flop.
 A gate cannot drive a flip-flop output.
 Combinational loops stop with an event-limit error.
-All gates use zero delay.
+A gate without a delay field uses zero delay.
+A gate delay applies to both rising and falling transitions.
+The initial state settles at time zero without delay.
+Events at time zero ignore the gate delay.
+A delayed transition uses the input value at its fire time.
+A later input change supersedes an earlier pending transition.
 Zero-delay gates can show combinational settling transients at clock edges and at time zero.
 Input changes apply only at scheduled times.
 They do not react to circuit state.
@@ -1054,6 +1134,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.13.0.0 completed configurable gate delays.
 Release 0.12.0.0 completed multi-bit values in the VCD timeline.
 Release 0.11.0.0 completed whole-bus input values on the command line.
 Release 0.10.0.0 completed the waveform report command.
@@ -1068,7 +1149,9 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add configurable gate delays.
+1. Add separate rise and fall delay fields.
+2. Add a clock-to-output delay field for flip-flops.
+3. Add a buffer gate to the gate library.
 
 ## License
 

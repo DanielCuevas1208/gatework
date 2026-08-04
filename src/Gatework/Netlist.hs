@@ -53,6 +53,7 @@ data Gate = Gate
   , gateName :: String
   , gateInputs :: [String]
   , gateOutput :: String
+  , gateDelay :: Int
   }
   deriving (Eq, Show)
 
@@ -112,7 +113,7 @@ data RawDeclaration
   | RawOutput String Int
   | RawWire String Int
   | RawClock Clock
-  | RawGate GateType String [Ref] Ref
+  | RawGate GateType String [Ref] Ref Int
   | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref)
   | RawAssert Ref Logic Time
   | RawInstance String String [Ref] [Ref]
@@ -305,7 +306,7 @@ parseLine (lineNumber, line) = case words line of
     unless (parsedPeriod >= 2 && even parsedPeriod) $
       Left (lineError lineNumber "clock period must be an even integer of at least two")
     pure (RawClock (Clock signal parsedPeriod))
-  ["gate", gateText, name, ports, "->", output] -> do
+  ("gate" : gateText : name : ports : "->" : output : fields) -> do
     gate <- maybe (Left (lineError lineNumber ("unknown gate type: " ++ gateText))) Right
       (parseGateType (map toUpper gateText))
     gateName' <- parseIdentifier lineNumber name
@@ -313,7 +314,8 @@ parseLine (lineNumber, line) = case words line of
     outputRef <- parseRef lineNumber output
     unless (length inputRefs == gateArity gate) $
       Left (lineError lineNumber ("gate " ++ name ++ " expects " ++ show (gateArity gate) ++ " inputs"))
-    pure (RawGate gate gateName' inputRefs outputRef)
+    delay <- parseGateFields lineNumber fields
+    pure (RawGate gate gateName' inputRefs outputRef delay)
   ("dff" : name : fields) -> do
     dffName' <- parseIdentifier lineNumber name
     parsedFields <- mapM (parseField lineNumber) fields
@@ -423,6 +425,22 @@ parseField lineNumber field = case break (== '=') field of
     | key `elem` ["clock", "d", "q", "init", "rst", "width"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
 
+parseGateFields :: Int -> [String] -> Either String Int
+parseGateFields lineNumber fields = do
+  values <- mapM parseOne fields
+  case [value | Just value <- values] of
+    [] -> Right 0
+    [value] -> Right value
+    _ -> Left (lineError lineNumber "gate delay cannot repeat")
+  where
+    parseOne field = case break (== '=') field of
+      ("delay", '=' : value)
+        | not (null value) -> Just <$> parseDelayValue value
+      _ -> Left (lineError lineNumber ("invalid gate field: " ++ field))
+    parseDelayValue value = case reads value of
+      [(number, "")] | number >= 0 -> Right number
+      _ -> Left (lineError lineNumber ("gate delay must be a non-negative integer: " ++ value))
+
 parseNonNegative :: Int -> String -> String -> Either String Int
 parseNonNegative lineNumber key token = case reads token of
   [(number, "")] | number >= 0 -> Right number
@@ -504,16 +522,16 @@ resolveDeclaration signatureModules widths declaration = case declaration of
   RawOutput name width -> Right (map OutputDeclaration (bitNames name width))
   RawWire name width -> Right (map WireDeclaration (bitNames name width))
   RawClock clock -> Right [ClockDeclaration clock]
-  RawGate gateKind name inputRefs outputRef ->
-    resolveGate widths gateKind name inputRefs outputRef
+  RawGate gateKind name inputRefs outputRef delay ->
+    resolveGate widths gateKind name inputRefs outputRef delay
   RawDff name clockRef dataRefs outRefs initText widthText resetRef ->
     resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef
   RawAssert signalRef value time -> resolveAssertion widths signalRef value time
   RawInstance name targetModule inputRefs outputRefs ->
     resolveInstance signatureModules widths name targetModule inputRefs outputRefs
 
-resolveGate :: Map String Int -> GateType -> String -> [Ref] -> Ref -> Either String [Declaration]
-resolveGate widths gateKind name inputRefs outputRef = do
+resolveGate :: Map String Int -> GateType -> String -> [Ref] -> Ref -> Int -> Either String [Declaration]
+resolveGate widths gateKind name inputRefs outputRef delay = do
   inputBits <- mapM (resolveRef widths) inputRefs
   outputBits <- resolveRef widths outputRef
   let width = length outputBits
@@ -521,7 +539,7 @@ resolveGate widths gateKind name inputRefs outputRef = do
     Left ("gate " ++ name ++ " mixes bus widths")
   pure
     [ GateDeclaration
-        (Gate gateKind (componentName name width index) (map (!! index) inputBits) (outputBits !! index))
+        (Gate gateKind (componentName name width index) (map (!! index) inputBits) (outputBits !! index) delay)
     | index <- [0 .. width - 1]
     ]
 
