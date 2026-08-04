@@ -5,37 +5,33 @@ $version
   gatework 0.14.0.0
 $end
 $comment
-  assert x = 1 at 0
-  assert y = 0 at 0
-  assert x = 0 at 4
-  assert y = 0 at 6
-  assert y = 1 at 7
-  assert x = 1 at 8
-  assert y = 0 at 11
+  assert y = 1 at 0
+  assert y = 1 at 1
+  assert y = 0 at 2
+  assert y = 0 at 9
+  assert y = 1 at 10
+  assert y = 1 at 11
+  assert y = 0 at 12
 $end
 $timescale 1ns $end
 $scope module gatework $end
 $var wire 1 ! a $end
-$var wire 1 " x $end
-$var wire 1 # y $end
+$var wire 1 " y $end
 $upscope $end
 $enddefinitions $end
 #0
 0!
 0"
 1"
-0#
-1#
-0#
-#2
+#1
 1!
-#4
+#2
 0"
 #6
 0!
-#7
-1#
-#8
+#10
 1"
 #11
-0#
+1!
+#12
+0"

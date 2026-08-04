@@ -93,15 +93,22 @@ commitsForChanged byInput drivers state changedSignals =
   , evaluateGate state gate /= currentContribution drivers gate
   ]
 
-scheduleCommits :: Time -> EventQueue -> [Gate] -> ([Pending], EventQueue)
-scheduleCommits time queue commits = foldl' step ([], queue) commits
+scheduleCommits :: Time -> EventQueue -> [Gate] -> WireState -> ([Pending], EventQueue)
+scheduleCommits time queue commits state = foldl' step ([], queue) commits
   where
-    step (immediate, currentQueue) gate
-      | gateDelay gate == 0 || time == 0 = (immediate ++ [GateCommit gate], currentQueue)
-      | otherwise =
-          ( immediate
-          , Map.insertWith (++) (time + fromIntegral (gateDelay gate)) [GateCommit gate] currentQueue
-          )
+    step (immediate, currentQueue) gate =
+      let delay = delayForOutput state gate
+      in if delay == 0 || time == 0
+           then (immediate ++ [GateCommit gate], currentQueue)
+           else
+             ( immediate
+             , Map.insertWith (++) (time + fromIntegral delay) [GateCommit gate] currentQueue
+             )
+
+delayForOutput :: WireState -> Gate -> Int
+delayForOutput state gate = case evaluateGate state gate of
+  High -> gateRiseDelay gate
+  _ -> gateFallDelay gate
 
 commitContribution :: Map String [(Gate, Logic)] -> Gate -> Logic -> Map String [(Gate, Logic)]
 commitContribution drivers gate value =
@@ -292,7 +299,8 @@ processSignalEvent netlist byInput duration time signal value pending queue stat
                 if oldValue == Low && value == High
                   then [FlipFlopBatch (edgeSamples netlist signal (simWireValues nextState))]
                   else []
-              (immediate, scheduledQueue) = scheduleCommits time queue commits
+              (immediate, scheduledQueue) =
+                scheduleCommits time queue commits (simWireValues nextState)
           in settleAtTime netlist byInput duration time (pending ++ flipFlopEvents ++ immediate)
                scheduledQueue nextState nextChanges (steps + 1)
 
@@ -302,7 +310,8 @@ processFlipFlopBatch :: Netlist -> Map String [Gate] -> Time -> Time
 processFlipFlopBatch netlist byInput duration time samples pending queue state changes steps =
   let (nextState, nextChanges, changedOutputs) = foldl' applySample (state, changes, []) samples
       commits = commitsForChanged byInput (simDrivers nextState) (simWireValues nextState) changedOutputs
-      (immediate, scheduledQueue) = scheduleCommits time queue commits
+      (immediate, scheduledQueue) =
+        scheduleCommits time queue commits (simWireValues nextState)
   in settleAtTime netlist byInput duration time (pending ++ immediate) scheduledQueue nextState nextChanges (steps + 1)
   where
     applySample (currentState, currentChanges, changed) (flipFlop, index, value) =

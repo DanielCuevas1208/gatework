@@ -5,6 +5,25 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.14.0.0] - 2026-08-04
+
+### Added
+
+- Declare separate rise and fall delays with the `rise=N` and `fall=N` fields.
+- A rising output transition fires after the rise delay.
+- Any other transition fires after the fall delay.
+- The `delay=N` field sets both delays to the same value.
+- The `delay=N` field cannot combine with `rise=` or `fall=`.
+- Reject negative, non-integer, repeated, and unknown delay fields.
+- Add an asymmetric delay demo fixture and a golden waveform.
+- Add deterministic tests and a QuickCheck property for asymmetric delays.
+
+### Changed
+
+- The scheduler picks the delay from the new output value.
+- Bump the package version to 0.14.0.0.
+- Update the golden VCD files to the new version string.
+
 ## [0.13.0.0] - 2026-08-03
 
 ### Added
