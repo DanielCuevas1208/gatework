@@ -1,0 +1,17 @@
+# Asymmetric gate delay demo.
+# A rising output transition uses the rise delay.
+# A falling output transition uses the fall delay.
+# The input changes stay farther apart than the longest delay.
+input a
+output y
+wire y
+
+gate NOT inv (a) -> y rise=4 fall=1
+
+assert y = 1 at 0
+assert y = 1 at 1
+assert y = 0 at 2
+assert y = 0 at 9
+assert y = 1 at 10
+assert y = 1 at 11
+assert y = 0 at 12

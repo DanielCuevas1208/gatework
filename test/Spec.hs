@@ -166,15 +166,20 @@ main = do
     , testMultiDriverResolution
     , testMultiDriverSettlesOnSchedule
     , testParserAcceptsGateDelay
+    , testParserAcceptsAsymmetricDelay
     , testParserRejectsNegativeDelay
     , testParserRejectsInvalidDelay
     , testParserRejectsUnknownGateField
     , testParserRejectsRepeatedDelay
+    , testParserRejectsDelayWithRiseOrFall
     , testDelayedGateTransitions
     , testDelayedGateChainAccumulates
     , testZeroDelayKeepsImmediateBehavior
     , testDelayedMultiDriverResolution
     , testDelayedInitialSettle
+    , testRisingTransitionUsesRiseDelay
+    , testFallingTransitionUsesFallDelay
+    , testGoldenAsymDelayVCD
     , testParserRejectsDuplicateDffOutput
     , testParserRejectsGateOnDffOutput
     , testParserRejectsInvalidClockPeriod
@@ -337,6 +342,7 @@ main = do
     , ("bus module matches the flat circuit", quickCheckResult propBusModuleMatchesFlat)
     , ("shared bus follows the resolution model", quickCheckResult (propSharedBusResolution shared))
     , ("delayed gates follow a reference model", quickCheckResult propDelayedGateMatchesReference)
+    , ("asymmetric delays follow a reference model", quickCheckResult propAsymmetricDelayMatchesReference)
     , ("library adder matches the flat adder", quickCheckResult (propLibraryAdderMatchesFlat adder libadder))
     , ("counter report matches the waveform", quickCheckResult (propCounterReportMatchesWaveform counter))
     , ("whole-bus values match per-bit values", quickCheckResult propWholeBusMatchesBitwise)
@@ -455,28 +461,53 @@ testParserAcceptsGateDelay = case
     Left _ -> check "parser accepts a gate delay" False
     Right netlist -> check "parser accepts a gate delay" $
       case netlistGates netlist of
-        [gate] -> gateDelay gate == 2
+        [gate] -> gateRiseDelay gate == 2 && gateFallDelay gate == 2
+        _ -> False
+
+testParserAcceptsAsymmetricDelay :: IO Bool
+testParserAcceptsAsymmetricDelay = case
+  parseNetlist (unlines
+    [ "input a"
+    , "wire x"
+    , "gate NOT first (a) -> x rise=2 fall=3"
+    ]) of
+    Left _ -> check "parser accepts rise and fall delays" False
+    Right netlist -> check "parser accepts rise and fall delays" $
+      case netlistGates netlist of
+        [gate] -> gateRiseDelay gate == 2 && gateFallDelay gate == 3
         _ -> False
 
 testParserRejectsNegativeDelay :: IO Bool
 testParserRejectsNegativeDelay =
-  check "parser rejects a negative gate delay" $ isLeft $
-    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=-1"
+  check "parser rejects a negative gate delay" $
+    isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=-1")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x rise=-1")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x fall=-2")
 
 testParserRejectsInvalidDelay :: IO Bool
 testParserRejectsInvalidDelay =
-  check "parser rejects a non-integer gate delay" $ isLeft $
-    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=fast"
+  check "parser rejects a non-integer gate delay" $
+    isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=fast")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x rise=fast")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x fall=fast")
 
 testParserRejectsUnknownGateField :: IO Bool
 testParserRejectsUnknownGateField =
   check "parser rejects an unknown gate field" $ isLeft $
-    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=2 rise=1"
+    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=2 hold=1"
 
 testParserRejectsRepeatedDelay :: IO Bool
 testParserRejectsRepeatedDelay =
-  check "parser rejects a repeated gate delay" $ isLeft $
-    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=1 delay=2"
+  check "parser rejects a repeated gate delay" $
+    isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=1 delay=2")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x rise=1 rise=2")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x fall=1 fall=2")
+
+testParserRejectsDelayWithRiseOrFall :: IO Bool
+testParserRejectsDelayWithRiseOrFall =
+  check "parser rejects delay combined with rise or fall" $
+    isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=2 rise=1")
+      && isLeft (parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=2 fall=1")
 
 testDelayedGateTransitions :: IO Bool
 testDelayedGateTransitions = case
@@ -571,6 +602,57 @@ testDelayedInitialSettle = case
           valueAt simulation "x" 0 == High
             && valueAt simulation "y" 0 == Low
         Left _ -> False
+
+testRisingTransitionUsesRiseDelay :: IO Bool
+testRisingTransitionUsesRiseDelay = case
+  parseNetlist (unlines
+    [ "input a"
+    , "output y"
+    , "wire y"
+    , "gate NOT inv (a) -> y rise=4 fall=1"
+    ]) of
+    Left _ -> check "a rising output uses the rise delay" False
+    Right netlist -> check "a rising output uses the rise delay" $ case
+      simulateWithScheduledInputs netlist [("a", Low)]
+        [(1, "a", High), (6, "a", Low)] 12 of
+        Right simulation ->
+          valueAt simulation "y" 0 == High
+            && valueAt simulation "y" 2 == Low
+            && valueAt simulation "y" 9 == Low
+            && valueAt simulation "y" 10 == High
+        Left _ -> False
+
+testFallingTransitionUsesFallDelay :: IO Bool
+testFallingTransitionUsesFallDelay = case
+  parseNetlist (unlines
+    [ "input a"
+    , "output y"
+    , "wire y"
+    , "gate NOT inv (a) -> y rise=1 fall=5"
+    ]) of
+    Left _ -> check "a falling output uses the fall delay" False
+    Right netlist -> check "a falling output uses the fall delay" $ case
+      simulateWithScheduledInputs netlist [("a", Low)]
+        [(1, "a", High), (7, "a", Low)] 14 of
+        Right simulation ->
+          valueAt simulation "y" 0 == High
+            && valueAt simulation "y" 5 == High
+            && valueAt simulation "y" 6 == Low
+            && valueAt simulation "y" 8 == High
+        Left _ -> False
+
+testGoldenAsymDelayVCD :: IO Bool
+testGoldenAsymDelayVCD = do
+  source <- readFile "fixtures/asymdelay.net"
+  golden <- readFile "fixtures/asymdelay.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        overrides <- resolveInputAssignments netlist [("a", "0")]
+        simulation <-
+          simulateWithScheduledInputs netlist overrides
+            [(1, "a", High), (6, "a", Low), (11, "a", High)] 15
+        pure (renderVCD simulation)
+  check "asymdelay VCD matches golden file" (actual == Right golden)
 
 testParserRejectsDuplicateDffOutput :: IO Bool
 testParserRejectsDuplicateDffOutput =
@@ -2537,6 +2619,55 @@ propDelayedGateMatchesReference =
           let time = current + gap
           rest <- go time (remaining - 1)
           pure (time : rest)
+
+propAsymmetricDelayMatchesReference :: Property
+propAsymmetricDelayMatchesReference =
+  forAll (choose (1 :: Int, 4)) $ \rise ->
+    forAll (choose (1 :: Int, 4)) $ \fall ->
+      forAll (choose (0 :: Int, 4)) $ \count ->
+        forAll (spacedChanges (max rise fall + 1) count) $ \changes ->
+          forAll (choose (0 :: Int, 45)) $ \query ->
+            let source = unlines
+                  [ "input a"
+                  , "output y"
+                  , "wire y"
+                  , "gate NOT inv (a) -> y rise=" ++ show rise ++ " fall=" ++ show fall
+                  ]
+            in case parseNetlist source of
+                 Left _ -> property False
+                 Right netlist ->
+                   case simulateWithScheduledInputs netlist [("a", Low)]
+                     [ (fromIntegral time, "a", value) | (time, value) <- changes ] 45 of
+                     Left _ -> property False
+                     Right simulation ->
+                       property
+                         ( all
+                             (\queryTime ->
+                               valueAt simulation "y" (fromIntegral queryTime)
+                                 == expectedAsymValue changes rise fall queryTime)
+                             [0 .. query]
+                         )
+  where
+    logical = elements [Low, High]
+    spacedChanges gap count = go 0 count
+      where
+        go _ 0 = pure []
+        go current remaining = do
+          delta <- choose (gap, gap + 6)
+          let time = current + delta
+          value <- logical
+          rest <- go time (remaining - 1)
+          pure ((time, value) : rest)
+    expectedAsymValue changes rise fall queryTime = go (reverse changes)
+      where
+        go [] = invertTwo Low
+        go ((time, value) : rest)
+          | queryTime >= time + commitDelay target = target
+          | otherwise = go rest
+          where
+            target = invertTwo value
+            commitDelay High = rise
+            commitDelay _ = fall
 
 propNandInvertsAnd :: Logical -> Logical -> Bool
 propNandInvertsAnd (Logical left) (Logical right) =

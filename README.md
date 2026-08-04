@@ -51,6 +51,9 @@ You can do these tasks:
 - Declare a gate output delay with the `delay=N` field.
 - Watch a gate transition fire after its declared delay.
 - Let gate delays accumulate through a chain of gates.
+- Declare separate rise and fall delays with the `rise=N` and `fall=N` fields.
+- Watch a rising output fire after its rise delay.
+- Watch a falling output fire after its fall delay.
 
 ## Architecture
 
@@ -84,6 +87,8 @@ The scheduler processes only changed signals.
 The scheduler tracks one committed contribution per gate driver.
 The scheduler resolves several gate drivers into one wire value.
 A delayed gate commits its new value after its delay elapses.
+A rising output uses the rise delay.
+A falling output uses the fall delay.
 A gate delay accumulates through a chain of gates.
 A rising clock edge samples attached flip-flops together.
 An asserted reset forces flip-flop outputs to their initial values.
@@ -515,6 +520,45 @@ The signal `x` rises at time 8.
 The signal `y` falls at time 11.
 The initial state settles at time zero without delay.
 
+## Asymmetric delay demo
+
+Run one inverter with different rise and fall delays.
+
+```powershell
+cabal run gatework -- --netlist fixtures/asymdelay.net --duration 15 --output asymdelay.vcd --set a=0 --at 1 a=1 --at 6 a=0 --at 11 a=1
+```
+
+The command writes this output:
+
+```text
+Wrote asymdelay.vcd
+Signals: 2
+Duration: 15 time units
+Assertions: 7 passed
+```
+
+The gate uses the `rise=4` and `fall=1` fields.
+A rising output waits four time units.
+A falling output waits one time unit.
+The input changes stay farther apart than the longest delay.
+
+| Time | a | y |
+| --- | --- | --- |
+| 0 | 0 | 1 |
+| 1 | 1 | 1 |
+| 2 | 1 | 0 |
+| 6 | 0 | 0 |
+| 10 | 0 | 1 |
+| 11 | 1 | 1 |
+| 12 | 1 | 0 |
+
+The input `a` rises at time 1.
+The output `y` falls at time 2, one unit later.
+The input `a` falls at time 6.
+The output `y` rises at time 10, four units later.
+The input `a` rises at time 11.
+The output `y` falls at time 12.
+
 ## Bus demo
 
 Run four-bit bus operations with gates and a register.
@@ -759,6 +803,35 @@ The value `b0101` means `a[3]=0`, `a[2]=1`, `a[1]=0`, and `a[0]=1`.
 The value `b1111` means every bit of `x` is high.
 The register output `q` changes together on the clock edge.
 
+The file `fixtures/asymdelay.golden.vcd` holds the asymmetric delay demo waveform.
+Its timeline shows the output fall one unit after the input rise.
+The output rise comes four units after the input fall:
+
+```text
+#0
+0!
+0"
+1"
+#1
+1!
+#2
+0"
+#6
+0!
+#10
+1"
+#11
+1!
+#12
+0"
+```
+
+Here `!` is the input `a` and `"` is the output `y`.
+The input rises at time 1 and time 11.
+The output falls one unit later at time 2 and time 12.
+The input falls at time 6.
+The output rises four units later at time 10.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -814,10 +887,22 @@ A chain of gates adds the delays together.
 The example output `y` changes two units after `a`.
 The output `z` changes three units after `y`.
 
-The initial state settles at time zero without delay.
-Events at time zero ignore the gate delay.
+A gate can use separate rise and fall delays.
+The `rise=N` field delays a transition to high.
+The `fall=N` field delays every other transition.
+Omitted delays default to zero.
+
+```text
+gate NOT slow (a) -> y rise=4 fall=1
+```
+
+The `delay=N` field sets both delays to the same value.
+The `delay=` field cannot combine with `rise=` or `fall=`.
 A delay field cannot repeat on one gate.
 An unknown gate field is an error.
+
+The initial state settles at time zero without delay.
+Events at time zero ignore the gate delay.
 
 ### Multiple drivers
 
@@ -1041,6 +1126,7 @@ Deterministic tests also cover whole-bus input values, their bit order, their er
 Deterministic tests also cover VCD vectors, their header declarations, their grouped values, four-state vector values, and module-internal bus vectors.
 Deterministic tests also cover gate delay parsing and invalid delay fields.
 Deterministic tests also cover delayed transitions, delay accumulation, zero-delay behavior, multi-driver delays, and the initial settle.
+Deterministic tests also cover rise and fall delay parsing, conflict rules, direction-specific transitions, and the asymmetric delay demo.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1048,6 +1134,7 @@ QuickCheck properties also compare a bus circuit with a bitwise reference model.
 QuickCheck properties also compare the shared bus with a per-time resolution model.
 QuickCheck properties also compare a library adder with its flat version.
 QuickCheck properties also compare a delayed gate with a per-time reference model.
+QuickCheck properties also compare an asymmetric delayed gate with a per-time reference model.
 QuickCheck properties also compare the counter report with the simulated waveform.
 QuickCheck properties also compare whole-bus input values with per-bit reference values.
 QuickCheck properties also compare every VCD vector value with the per-bit waveform.
@@ -1071,6 +1158,7 @@ The library adder property compares a library netlist with the flat adder.
 The counter report property compares each report cell with the simulated value.
 The VCD vector property compares each vector value with the per-bit values at that time.
 The delayed-gate property compares each output sample with the reference input time.
+The asymmetric-delay property compares each output sample with the directional reference.
 
 ## Test status
 
@@ -1083,6 +1171,7 @@ CI runs the report demo and compares it with the report golden file.
 CI runs the bus demo with whole-bus input values.
 CI runs the four-state vector demo and compares it with its golden file.
 CI runs the gate delay demo and compares it with its golden file.
+CI runs the asymmetric delay demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1099,6 +1188,10 @@ A gate cannot drive a flip-flop output.
 Combinational loops stop with an event-limit error.
 A gate without a delay field uses zero delay.
 A gate delay applies to both rising and falling transitions.
+A transition to high uses the rise delay.
+Every other transition uses the fall delay.
+The `delay=` field sets both delays to one value.
+The `delay=` field cannot combine with `rise=` or `fall=`.
 The initial state settles at time zero without delay.
 Events at time zero ignore the gate delay.
 A delayed transition uses the input value at its fire time.
@@ -1134,6 +1227,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.14.0.0 completed separate rise and fall gate delays.
 Release 0.13.0.0 completed configurable gate delays.
 Release 0.12.0.0 completed multi-bit values in the VCD timeline.
 Release 0.11.0.0 completed whole-bus input values on the command line.
@@ -1149,9 +1243,8 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add separate rise and fall delay fields.
-2. Add a clock-to-output delay field for flip-flops.
-3. Add a buffer gate to the gate library.
+1. Add a clock-to-output delay field for flip-flops.
+2. Add a buffer gate to the gate library.
 
 ## License
 

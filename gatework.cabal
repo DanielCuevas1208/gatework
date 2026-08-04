@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.13.0.0
+version:            0.14.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
@@ -16,6 +16,7 @@ description:
   The command-line tool also sets a whole bus with one bit string.
   Buses render as multi-bit vectors in the VCD timeline.
   A gate can declare a delay with the delay=N field.
+  A gate can declare separate rise and fall delays.
   The scheduler delays each gate transition by the declared amount.
   GTKWave and other waveform viewers can open the output.
 homepage:           https://github.com/DanielCuevas1208/gatework
