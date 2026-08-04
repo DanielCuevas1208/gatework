@@ -9,6 +9,7 @@ import qualified Data.Map.Strict as Map
 import Gatework.Logic (GateType (..), Logic (..), evalGate, logicChar, parseLogic)
 import Gatework.Netlist
   ( Assertion (..)
+  , Gate (..)
   , Netlist (..)
   , netlistAssertions
   , netlistSignals
@@ -42,6 +43,7 @@ import Test.QuickCheck
   , property
   , quickCheckResult
   , vector
+  , vectorOf
   )
 import Test.QuickCheck.Test (isSuccess)
 import Text.Read (readMaybe)
@@ -163,6 +165,16 @@ main = do
     , testParserRejectsDuplicateSignal
     , testMultiDriverResolution
     , testMultiDriverSettlesOnSchedule
+    , testParserAcceptsGateDelay
+    , testParserRejectsNegativeDelay
+    , testParserRejectsInvalidDelay
+    , testParserRejectsUnknownGateField
+    , testParserRejectsRepeatedDelay
+    , testDelayedGateTransitions
+    , testDelayedGateChainAccumulates
+    , testZeroDelayKeepsImmediateBehavior
+    , testDelayedMultiDriverResolution
+    , testDelayedInitialSettle
     , testParserRejectsDuplicateDffOutput
     , testParserRejectsGateOnDffOutput
     , testParserRejectsInvalidClockPeriod
@@ -181,6 +193,7 @@ main = do
     , testDffInitListRespected
     , testRegisterWidthSamplesAllBits
     , testEventLimitOnCombinationalLoop
+    , testConsistentLoopSettles
     , testNegativeDurationRejected
     , testInputOverrideValidation
     , testScheduledInputValidation
@@ -279,6 +292,7 @@ main = do
     , testVCDVectorFourState
     , testVCDVectorModuleBus
     , testGoldenVector4VCD
+    , testGoldenDelayVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -322,6 +336,7 @@ main = do
     , ("bus register samples every bit", quickCheckResult propBusRegisterSampling)
     , ("bus module matches the flat circuit", quickCheckResult propBusModuleMatchesFlat)
     , ("shared bus follows the resolution model", quickCheckResult (propSharedBusResolution shared))
+    , ("delayed gates follow a reference model", quickCheckResult propDelayedGateMatchesReference)
     , ("library adder matches the flat adder", quickCheckResult (propLibraryAdderMatchesFlat adder libadder))
     , ("counter report matches the waveform", quickCheckResult (propCounterReportMatchesWaveform counter))
     , ("whole-bus values match per-bit values", quickCheckResult propWholeBusMatchesBitwise)
@@ -428,6 +443,133 @@ testMultiDriverSettlesOnSchedule = case
             && valueAt simulation "y" 3 == Low
             && valueAt simulation "y" 5 == Undefined
             && valueAt simulation "y" 7 == High
+        Left _ -> False
+
+testParserAcceptsGateDelay :: IO Bool
+testParserAcceptsGateDelay = case
+  parseNetlist (unlines
+    [ "input a"
+    , "wire x"
+    , "gate NOT first (a) -> x delay=2"
+    ]) of
+    Left _ -> check "parser accepts a gate delay" False
+    Right netlist -> check "parser accepts a gate delay" $
+      case netlistGates netlist of
+        [gate] -> gateDelay gate == 2
+        _ -> False
+
+testParserRejectsNegativeDelay :: IO Bool
+testParserRejectsNegativeDelay =
+  check "parser rejects a negative gate delay" $ isLeft $
+    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=-1"
+
+testParserRejectsInvalidDelay :: IO Bool
+testParserRejectsInvalidDelay =
+  check "parser rejects a non-integer gate delay" $ isLeft $
+    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=fast"
+
+testParserRejectsUnknownGateField :: IO Bool
+testParserRejectsUnknownGateField =
+  check "parser rejects an unknown gate field" $ isLeft $
+    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=2 rise=1"
+
+testParserRejectsRepeatedDelay :: IO Bool
+testParserRejectsRepeatedDelay =
+  check "parser rejects a repeated gate delay" $ isLeft $
+    parseNetlist "input a\nwire x\ngate NOT first (a) -> x delay=1 delay=2"
+
+testDelayedGateTransitions :: IO Bool
+testDelayedGateTransitions = case
+  parseNetlist (unlines
+    [ "input a"
+    , "output y"
+    , "wire y"
+    , "gate NOT inv (a) -> y delay=2"
+    ]) of
+    Left _ -> check "a delayed gate settles after its delay" False
+    Right netlist -> check "a delayed gate settles after its delay" $ case
+      simulateWithScheduledInputs netlist [("a", Low)] [(1, "a", High)] 6 of
+        Right simulation ->
+          valueAt simulation "y" 0 == High
+            && valueAt simulation "y" 2 == High
+            && valueAt simulation "y" 3 == Low
+            && valueAt simulation "y" 6 == Low
+        Left _ -> False
+
+testDelayedGateChainAccumulates :: IO Bool
+testDelayedGateChainAccumulates = case
+  parseNetlist (unlines
+    [ "input a"
+    , "output y"
+    , "wire x"
+    , "wire y"
+    , "gate NOT first (a) -> x delay=2"
+    , "gate NOT second (x) -> y delay=3"
+    ]) of
+    Left _ -> check "gate delays accumulate through a chain" False
+    Right netlist -> check "gate delays accumulate through a chain" $ case
+      simulateWithScheduledInputs netlist [("a", Low)] [(2, "a", High)] 12 of
+        Right simulation ->
+          valueAt simulation "x" 4 == Low
+            && valueAt simulation "y" 7 == High
+        Left _ -> False
+
+testZeroDelayKeepsImmediateBehavior :: IO Bool
+testZeroDelayKeepsImmediateBehavior = case
+  parseNetlist (unlines
+    [ "input a"
+    , "output y"
+    , "wire y"
+    , "gate NOT inv (a) -> y delay=0"
+    ]) of
+    Left _ -> check "zero delay keeps immediate transitions" False
+    Right netlist -> check "zero delay keeps immediate transitions" $ case
+      simulateWithScheduledInputs netlist [("a", Low)] [(1, "a", High)] 3 of
+        Right simulation ->
+          valueAt simulation "y" 0 == High
+            && valueAt simulation "y" 1 == Low
+            && valueAt simulation "y" 2 == Low
+        Left _ -> False
+
+testDelayedMultiDriverResolution :: IO Bool
+testDelayedMultiDriverResolution = case
+  parseNetlist (unlines
+    [ "input d0"
+    , "input d1"
+    , "input e0"
+    , "input e1"
+    , "output y"
+    , "wire y"
+    , "gate TRIBUF a (d0,e0) -> y delay=1"
+    , "gate TRIBUF b (d1,e1) -> y delay=3"
+    ]) of
+    Left _ -> check "delayed drivers resolve per gate" False
+    Right netlist -> check "delayed drivers resolve per gate" $ case
+      simulateWithScheduledInputs netlist [("d0", High), ("d1", High)]
+        [(1, "e0", High), (1, "e1", High)] 6 of
+        Right simulation ->
+          valueAt simulation "y" 0 == TriState
+            && valueAt simulation "y" 2 == High
+            && valueAt simulation "y" 4 == High
+        Left _ -> False
+
+testDelayedInitialSettle :: IO Bool
+testDelayedInitialSettle = case
+  parseNetlist (unlines
+    [ "input a"
+    , "output x"
+    , "output y"
+    , "wire x"
+    , "wire y"
+    , "gate NOT first (a) -> x delay=2"
+    , "gate NOT second (x) -> y delay=3"
+    ]) of
+    Left _ -> check "the initial state settles without delay" False
+    Right netlist -> check "the initial state settles without delay" $ case
+      simulateWithScheduledInputs netlist [("a", Low)] [] 10 of
+        Right simulation ->
+          valueAt simulation "x" 0 == High
+            && valueAt simulation "y" 0 == Low
         Left _ -> False
 
 testParserRejectsDuplicateDffOutput :: IO Bool
@@ -587,11 +729,24 @@ testRegisterWidthSamplesAllBits =
 
 testEventLimitOnCombinationalLoop :: IO Bool
 testEventLimitOnCombinationalLoop =
+  let netlist = parseNetlist
+        "wire y\nwire z\nwire w\ngate NOT a (y) -> z\ngate NOT b (z) -> w\ngate NOT c (w) -> y"
+  in case netlist of
+    Left _ -> check "oscillating loops stop with an error" False
+    Right parsed -> check "oscillating loops stop with an error" $
+      isLeft (simulate parsed 5)
+
+testConsistentLoopSettles :: IO Bool
+testConsistentLoopSettles =
   let netlist = parseNetlist "wire y\nwire z\ngate NOT a (y) -> z\ngate NOT b (z) -> y"
   in case netlist of
-    Left _ -> check "combinational loops stop with an error" False
-    Right parsed -> check "combinational loops stop with an error" $
-      isLeft (simulate parsed 5)
+    Left _ -> check "a loop with a consistent state settles" False
+    Right parsed -> check "a loop with a consistent state settles" $
+      case simulate parsed 5 of
+        Left _ -> False
+        Right simulation ->
+          valueAt simulation "y" 0 == High
+            && valueAt simulation "z" 0 == Low
 
 testNegativeDurationRejected :: IO Bool
 testNegativeDurationRejected =
@@ -2058,6 +2213,17 @@ testGoldenVector4VCD = do
         pure (renderVCD simulation)
   check "vector4 VCD matches golden file" (actual == Right golden)
 
+testGoldenDelayVCD :: IO Bool
+testGoldenDelayVCD = do
+  source <- readFile "fixtures/delay.net"
+  golden <- readFile "fixtures/delay.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        overrides <- resolveInputAssignments netlist [("a", "0")]
+        simulation <- simulateWithScheduledInputs netlist overrides [(2, "a", High), (6, "a", Low)] 12
+        pure (renderVCD simulation)
+  check "delay VCD matches golden file" (actual == Right golden)
+
 data VcdVar = VcdVar
   { vcdVarName :: String
   , vcdVarId :: String
@@ -2330,6 +2496,47 @@ propSharedBusResolution netlist =
           expectedNy = evalGate Not [expectedY]
       in valueAt simulation "y" time == expectedY
           && valueAt simulation "ny" time == expectedNy
+
+propDelayedGateMatchesReference :: Property
+propDelayedGateMatchesReference =
+  forAll (choose (1 :: Int, 4)) $ \delay ->
+    forAll (choose (0 :: Int, 4)) $ \count ->
+      forAll (spacedTimes delay count) $ \timesRaw ->
+        forAll (vectorOf count logical) $ \values ->
+          forAll (choose (0 :: Int, 30)) $ \query ->
+            let changes = zip timesRaw values
+                source = unlines
+                  [ "input a"
+                  , "output y"
+                  , "wire y"
+                  , "gate NOT inv (a) -> y delay=" ++ show delay
+                  ]
+            in case parseNetlist source of
+                 Left _ -> property False
+                 Right netlist ->
+                   case simulateWithScheduledInputs netlist [("a", Low)]
+                     [ (fromIntegral time, "a", value) | (time, value) <- changes ] 30 of
+                     Left _ -> property False
+                     Right simulation ->
+                       property
+                         ( all
+                             (\queryTime ->
+                               valueAt simulation "y" (fromIntegral queryTime)
+                                 == invertTwo
+                                   (valueAt simulation "a"
+                                     (fromIntegral (max 0 (queryTime - delay)))))
+                             [0 .. query]
+                         )
+  where
+    logical = elements [Low, High]
+    spacedTimes delay count = go 0 count
+      where
+        go _ 0 = pure []
+        go current remaining = do
+          gap <- choose (delay + 1, 7)
+          let time = current + gap
+          rest <- go time (remaining - 1)
+          pure (time : rest)
 
 propNandInvertsAnd :: Logical -> Logical -> Bool
 propNandInvertsAnd (Logical left) (Logical right) =

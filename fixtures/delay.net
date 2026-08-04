@@ -1,0 +1,19 @@
+# Configurable gate delay demo.
+# Each gate delays its output transition by its declared delay.
+# Gate delays accumulate through a chain of gates.
+input a
+output x
+output y
+wire x
+wire y
+
+gate NOT first (a) -> x delay=2
+gate NOT second (x) -> y delay=3
+
+assert x = 1 at 0
+assert y = 0 at 0
+assert x = 0 at 4
+assert y = 0 at 6
+assert y = 1 at 7
+assert x = 1 at 8
+assert y = 0 at 11

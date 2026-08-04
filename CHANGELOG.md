@@ -5,6 +5,31 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.13.0.0] - 2026-08-03
+
+### Added
+
+- Declare a gate output delay with the `delay=N` field.
+- A gate transition fires at the input time plus the delay.
+- The delay applies to both rising and falling transitions.
+- Delays accumulate through a chain of gates.
+- The initial state settles at time zero without delay.
+- Zero delay keeps the immediate gate behavior.
+- Each driver of a shared wire commits with its own delay.
+- Reject negative, non-integer, repeated, and unknown gate fields.
+- Add a delay demo fixture and a golden waveform.
+- Add deterministic tests and a QuickCheck property for gate delays.
+
+### Changed
+
+- The scheduler tracks one committed contribution per gate driver.
+- A gate output changes only when the resolved wire value changes.
+- A combinational loop with a consistent state settles.
+- Only an oscillating loop stops with an event-limit error.
+- Bump the package version to 0.13.0.0.
+- Update the golden VCD files to the new version string.
+- Update the clocked and adder goldens to the settled values.
+
 ## [0.12.0.0] - 2026-08-03
 
 ### Added

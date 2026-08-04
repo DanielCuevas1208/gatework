@@ -96,6 +96,10 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/adderlib.net --duration 0 --output /tmp/libadder.vcd --set a0=1,a1=1,a2=0,a3=0,b0=1,b1=0,b2=1,b3=0,cin=0
       - name: Compare the library adder demo with the golden file
         run: diff fixtures/libadder.golden.vcd /tmp/libadder.vcd
+      - name: Run the gate delay demo
+        run: cabal run gatework -- --netlist fixtures/delay.net --duration 12 --output /tmp/delay.vcd --set a=0 --at 2 a=1 --at 6 a=0
+      - name: Compare the gate delay demo with the golden file
+        run: diff fixtures/delay.golden.vcd /tmp/delay.vcd
       - name: Confirm a missing library file stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/missing.net --duration 0 --output /tmp/none.vcd 2>/tmp/none.log; then
@@ -110,3 +114,11 @@ jobs:
             exit 1
           fi
           grep -q "assertion failed: y must be 1 at time 0" /tmp/fail.log
+      - name: Confirm an invalid gate delay stops the run
+        run: |
+          printf 'input a\nwire x\ngate NOT inv (a) -> x delay=-1\n' > /tmp/bad_delay.net
+          if cabal run gatework -- --netlist /tmp/bad_delay.net --duration 2 --output /tmp/bad_delay.vcd 2>/tmp/bad_delay.log; then
+            echo "expected the invalid gate delay to fail"
+            exit 1
+          fi
+          grep -q "gate delay must be a non-negative integer" /tmp/bad_delay.log
