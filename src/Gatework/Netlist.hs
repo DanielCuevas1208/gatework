@@ -129,7 +129,6 @@ data RawModule = RawModule
 data ParsedNetlist = ParsedNetlist
   { parsedModules :: Map String Module
   , parsedDeclarations :: [Declaration]
-  , parsedBusWidths :: Map String Int
   }
 
 emptyNetlist :: Netlist
@@ -170,7 +169,7 @@ parseNetlistWithLibraries libraries source = do
   validateModulesWithSources sources modules
   widths <- topLevelWidths rawDeclarations
   declarations <- resolveTopLevel signatureModules widths rawDeclarations
-  netlist <- flattenParsed (ParsedNetlist modules declarations widths)
+  netlist <- flattenParsed (ParsedNetlist modules declarations)
   _ <- validateNetlist netlist
   pure netlist
 
@@ -780,7 +779,7 @@ flattenParsed :: ParsedNetlist -> Either String Netlist
 flattenParsed parsed = do
   expanded <- concat <$> mapM (expandTop parsed) (parsedDeclarations parsed)
   let netlist = foldl' addDeclaration emptyNetlist expanded
-  pure netlist {netlistBusWidths = busWidthList (parsedBusWidths parsed)}
+  pure netlist {netlistBusWidths = busWidthList (inferBusWidths expanded)}
 
 expandTop :: ParsedNetlist -> Declaration -> Either String [Declaration]
 expandTop parsed declaration = case declaration of
@@ -866,6 +865,26 @@ netlistSignals netlist = nub
 busWidthList :: Map String Int -> [(String, Int)]
 busWidthList widths =
   [(name, width) | (name, width) <- Map.toAscList widths, width > 1]
+
+inferBusWidths :: [Declaration] -> Map String Int
+inferBusWidths = foldl' addName Map.empty . concatMap declarationNames
+  where
+    declarationNames declaration = case declaration of
+      InputDeclaration name -> [name]
+      OutputDeclaration name -> [name]
+      WireDeclaration name -> [name]
+      FlipFlopDeclaration flipFlop -> dffOutput flipFlop
+      _ -> []
+    addName widths name = case break (== '[') name of
+      (base, '[' : rest)
+        | not (null rest)
+        , last rest == ']'
+        , Just index <- readBracket (init rest) ->
+            Map.insertWith max base (index + 1) widths
+      _ -> widths
+    readBracket text = case reads text of
+      [(index, "")] -> Just index
+      _ -> Nothing
 
 resolveInputAssignments :: Netlist -> [(String, String)] -> Either String [(String, Logic)]
 resolveInputAssignments netlist = fmap concat . mapM resolveOne

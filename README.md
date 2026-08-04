@@ -45,6 +45,9 @@ You can do these tasks:
 - Sample a whole bus into a register on one clock edge.
 - Check a single bus bit with an assertion.
 - Set a whole bus on the command line with one bit string.
+- Read a whole bus as one multi-bit VCD vector.
+- See unknown and floating values inside a VCD vector.
+- Group module-internal buses into VCD vectors too.
 
 ## Architecture
 
@@ -56,7 +59,7 @@ The project has five library modules.
 | `Gatework.Netlist` | Parses, validates, and flattens circuit files |
 | `Gatework.Report` | Renders the waveform as a text table |
 | `Gatework.Simulator` | Schedules signal changes |
-| `Gatework.VCD` | Renders the waveform text |
+| `Gatework.VCD` | Renders waveform text as signals and bus vectors |
 
 The data flow is:
 
@@ -81,6 +84,7 @@ An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
 The assertion checker compares declared expectations with the waveform.
 The VCD writer uses stable signal order and stable identifiers.
+The VCD writer groups bus bits into multi-bit vectors.
 The report writer prints one row per change time.
 
 The repository layout is:
@@ -504,6 +508,62 @@ The value 0101 means `a[0]=1`, `a[1]=0`, `a[2]=1`, and `a[3]=0`.
 Bit 0 is the least-significant bit.
 The value 1010 means `b[0]=0`, `b[1]=1`, `b[2]=0`, and `b[3]=1`.
 
+## Multi-bit VCD vectors
+
+Run the four-state vector demo.
+
+```powershell
+cabal run gatework -- --netlist fixtures/vector4.net --duration 2 --output vector4.vcd --set a=0z01,b=01x0,en=1 --at 2 en=0
+```
+
+The command writes this output:
+
+```text
+Wrote vector4.vcd
+Signals: 15
+Duration: 2 time units
+Assertions: 6 passed
+```
+
+The VCD header declares each bus as one vector.
+
+```text
+$var wire 4 ! a[3:0] $end
+$var wire 4 " b[3:0] $end
+$var wire 1 # en $end
+$var wire 4 $ x[3:0] $end
+$var wire 2 % m[1:0] $end
+```
+
+The vector name shows the declared width and the bit range.
+The timeline lists the whole bus value at each change time.
+
+```text
+#0
+b0z01!
+b01x0"
+1#
+b0xx1$
+bx1%
+#2
+0#
+bzz%
+```
+
+A vector value starts with the letter b.
+The bit string lists the most-significant bit first.
+The value `b0xx1` means x[3]=0, x[2]=x, x[1]=x, and x[0]=1.
+Unknown and floating values appear inside the string.
+
+| Time | a[3:0] | b[3:0] | en | x[3:0] | m[1:0] |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0z01 | 01x0 | 1 | 0xx1 | x1 |
+| 2 | 0z01 | 01x0 | 0 | 0xx1 | zz |
+
+At time 2 the enable goes low.
+Both tri-state buffers float, so m reads zz.
+The whole vector changes together on one line.
+
 ## Sample output
 
 The file `fixtures/counter.golden.vcd` holds the complete counter waveform.
@@ -617,41 +677,41 @@ x#
 ```
 
 The file `fixtures/bus.golden.vcd` holds the bus demo waveform.
-Its header maps each bus bit to one identifier:
+Its header declares each bus as one vector:
 
 ```text
-$var wire 1 ! a[0] $end
-$var wire 1 " a[1] $end
-$var wire 1 # a[2] $end
-$var wire 1 $ a[3] $end
+$var wire 4 ! a[3:0] $end
+$var wire 4 " b[3:0] $end
+$var wire 4 # x[3:0] $end
+$var wire 4 $ n[3:0] $end
+$var wire 4 % q[3:0] $end
+$var wire 1 & clk $end
+$var wire 2 ' hi[1:0] $end
+$var wire 1 ( c0 $end
 ```
 
-Its timeline shows the settled values after the zero-delay transients:
+Its timeline shows the settled vector values after the zero-delay transients:
 
 ```text
 #0
-1)
-1*
-1+
-1,
-0-
-0.
-0/
-00
-18
+b0101!
+b1010"
+b1111#
+b0000$
+b0000%
+0&
+b00'
+0(
+1(
 #1
-11
-12
-13
-14
-15
+b1111%
+1&
 ```
 
-Here `)` is `x[0]`, `-` is `n[0]`, and `0` is `n[3]`.
-The value `18` means `c0` is high.
-The value `00` means `n[3]` is low.
-The identifier `1` is `q[0]`.
-The register outputs change together on the clock edge.
+Here `!` is `a`, `#` is `x`, `$` is `n`, and `%` is `q`.
+The value `b0101` means `a[3]=0`, `a[2]=1`, `a[1]=0`, and `a[0]=1`.
+The value `b1111` means every bit of `x` is high.
+The register output `q` changes together on the clock edge.
 
 ## Netlist format
 
@@ -909,6 +969,7 @@ Deterministic tests also cover multi-driver resolution, scheduled driver changes
 Deterministic tests also cover module library loading, cross-library module references, duplicate module names, and library file validation.
 Deterministic tests also cover the report command, its header order, its counter table, and its golden output.
 Deterministic tests also cover whole-bus input values, their bit order, their error cases, scheduled whole-bus transitions, and their golden output.
+Deterministic tests also cover VCD vectors, their header declarations, their grouped values, four-state vector values, and module-internal bus vectors.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -917,6 +978,7 @@ QuickCheck properties also compare the shared bus with a per-time resolution mod
 QuickCheck properties also compare a library adder with its flat version.
 QuickCheck properties also compare the counter report with the simulated waveform.
 QuickCheck properties also compare whole-bus input values with per-bit reference values.
+QuickCheck properties also compare every VCD vector value with the per-bit waveform.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -935,16 +997,18 @@ The bus hierarchy property shows that a bus module matches its flat circuit.
 The shared-bus property compares each resolved wire value with a per-time model.
 The library adder property compares a library netlist with the flat adder.
 The counter report property compares each report cell with the simulated value.
+The VCD vector property compares each vector value with the per-bit values at that time.
 
 ## Test status
 
 All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
-Golden tests compare the counter, register, reset, two-bit register, assertion, gate, hierarchical adder, library adder, hierarchical counter, adder, tri-state, undefined-state, bus, and shared-bus VCD text.
+Golden tests compare the counter, register, reset, two-bit register, assertion, gate, hierarchical adder, library adder, hierarchical counter, adder, tri-state, undefined-state, bus, shared-bus, and four-state vector VCD text.
 The golden report test compares the counter report table with its golden file.
 CI runs every demo and compares its output with the golden file.
 CI runs the report demo and compares it with the report golden file.
 CI runs the bus demo with whole-bus input values.
+CI runs the four-state vector demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 
 ## Limitations
@@ -962,7 +1026,9 @@ All gates use zero delay.
 Zero-delay gates can show combinational settling transients at clock edges and at time zero.
 Input changes apply only at scheduled times.
 They do not react to circuit state.
-VCD output uses one module scope and one-bit signals.
+VCD output uses one module scope.
+A bus renders as one multi-bit vector.
+A scalar signal renders as one bit.
 An asynchronous reset that releases on a clock edge is a race.
 The event order decides the result.
 A wide flip-flop uses one shared reset signal.
@@ -974,7 +1040,8 @@ A library file cannot hold top-level declarations.
 The main netlist cannot shadow a library module.
 Two library files cannot define the same module.
 Modules flatten before simulation, so the VCD stays flat.
-A bus expands into single-bit signals, so the VCD stays flat.
+A bus expands into single-bit signals internally.
+The VCD writer groups the bits into one vector again.
 A flip-flop bus output must have a `wire` or `output` declaration.
 A reference to a whole bus uses the declared width.
 An assertion addresses one bit, not a whole bus.
@@ -987,6 +1054,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.12.0.0 completed multi-bit values in the VCD timeline.
 Release 0.11.0.0 completed whole-bus input values on the command line.
 Release 0.10.0.0 completed the waveform report command.
 Release 0.9.0.0 completed module libraries.
@@ -1000,7 +1068,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add multi-bit values in the VCD timeline.
+1. Add configurable gate delays.
 
 ## License
 

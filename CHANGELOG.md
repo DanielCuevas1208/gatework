@@ -5,6 +5,26 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.12.0.0] - 2026-08-03
+
+### Added
+
+- Render each bus as one multi-bit vector in the VCD header.
+- Group bus values into one line in the VCD timeline.
+- Use the standard VCD vector syntax for the values.
+- Include unknown and floating values inside vector strings.
+- Detect module-internal buses after flattening.
+- Add a four-state vector demo fixture and a golden waveform.
+- Add deterministic tests and a QuickCheck property for vector output.
+- Extend the CI workflow to run the vector demo.
+
+### Changed
+
+- Group all bus bits under one VCD variable and identifier.
+- Bump the package version to 0.12.0.0.
+- Update the golden VCD files to the new version string.
+- Update the bus golden file to the vector format.
+
 ## [0.11.0.0] - 2026-08-03
 
 ### Added

@@ -2,7 +2,7 @@ $date
   generated deterministically by gatework
 $end
 $version
-  gatework 0.11.0.0
+  gatework 0.12.0.0
 $end
 $timescale 1ns $end
 $scope module gatework $end
