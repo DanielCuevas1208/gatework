@@ -80,8 +80,8 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/unknown.net --duration 8 --output /tmp/unknown.vcd --set d=1 --at 4 d=0
       - name: Compare the undefined demo with the golden file
         run: diff fixtures/unknown.golden.vcd /tmp/unknown.vcd
-      - name: Run the bus demo
-        run: cabal run gatework -- --netlist fixtures/bus.net --duration 3 --output /tmp/bus.vcd --set 'a[0]=1,a[2]=1,b[1]=1,b[3]=1'
+      - name: Run the bus demo with whole-bus values
+        run: cabal run gatework -- --netlist fixtures/bus.net --duration 3 --output /tmp/bus.vcd --set a=0101,b=1010
       - name: Compare the bus demo with the golden file
         run: diff fixtures/bus.golden.vcd /tmp/bus.vcd
       - name: Run the shared bus demo
