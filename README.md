@@ -54,6 +54,10 @@ You can do these tasks:
 - Declare separate rise and fall delays with the `rise=N` and `fall=N` fields.
 - Watch a rising output fire after its rise delay.
 - Watch a falling output fire after its fall delay.
+- Declare a clock-to-output delay with the `tco=N` field.
+- Watch a flip-flop output commit after its clock-to-output delay.
+- Capture data at the clock edge, not at the commit time.
+- Delay an asserted reset by the same amount.
 
 ## Architecture
 
@@ -91,6 +95,8 @@ A rising output uses the rise delay.
 A falling output uses the fall delay.
 A gate delay accumulates through a chain of gates.
 A rising clock edge samples attached flip-flops together.
+A flip-flop commits its output after its clock-to-output delay.
+A flip-flop captures the data value at the clock edge.
 An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
 The assertion checker compares declared expectations with the waveform.
@@ -559,6 +565,50 @@ The output `y` rises at time 10, four units later.
 The input `a` rises at time 11.
 The output `y` falls at time 12.
 
+## Clock-to-output delay demo
+
+Run a flip-flop with a clock-to-output delay and a reset.
+
+```powershell
+cabal run gatework -- --netlist fixtures/tco.net --duration 22 --output tco.vcd --set d=1 --at 4 d=0 --at 8 d=1 --at 14 rst=1 --at 16 rst=0
+```
+
+The command writes this output:
+
+```text
+Wrote tco.vcd
+Signals: 5
+Duration: 22 time units
+Assertions: 16 passed
+```
+
+The `tco=2` field delays the output commit by two time units.
+A rising clock edge samples the data at the edge.
+The output commits the captured value two units later.
+An asserted reset commits its value two units later too.
+
+| Time | d | rst | q | nq |
+| --- | --- | --- | --- | --- |
+| 0 | 1 | 0 | 0 | 1 |
+| 3 | 1 | 0 | 0 | 1 |
+| 4 | 0 | 0 | 1 | 0 |
+| 7 | 0 | 0 | 1 | 0 |
+| 8 | 1 | 0 | 0 | 1 |
+| 11 | 1 | 0 | 0 | 1 |
+| 12 | 1 | 0 | 1 | 0 |
+| 15 | 1 | 1 | 1 | 0 |
+| 16 | 1 | 0 | 0 | 1 |
+| 19 | 1 | 0 | 0 | 1 |
+| 20 | 1 | 0 | 1 | 0 |
+
+The clock rises at time 2.
+The output `q` commits to 1 at time 4, not at time 2.
+The data `d` falls at time 4.
+The output `q` stays 1 until the next edge commits at time 8.
+The reset `rst` rises at time 14.
+The output `q` stays 1 until the reset commit lands at time 16.
+Each commit lands two time units after its trigger.
+
 ## Bus demo
 
 Run four-bit bus operations with gates and a register.
@@ -832,6 +882,54 @@ The output falls one unit later at time 2 and time 12.
 The input falls at time 6.
 The output rises four units later at time 10.
 
+The file `fixtures/tco.golden.vcd` holds the clock-to-output delay demo waveform.
+Its timeline shows the output commit two units after each clock edge and reset:
+
+```text
+#0
+1!
+0"
+0#
+1$
+0%
+#2
+1%
+#4
+0!
+1#
+0$
+0%
+#6
+1%
+#8
+1!
+0#
+1$
+0%
+#12
+1#
+0$
+0%
+#14
+1"
+1%
+#16
+0"
+0#
+1$
+0%
+#20
+1#
+0$
+0%
+```
+
+Here `!` is `d`, `"` is `rst`, `#` is `q`, `$` is `nq`, and `%` is `clk`.
+The clock rises at time 2.
+The output `q` commits to 1 at time 4.
+The reset rises at time 14.
+The output `q` stays 1 until the reset commit lands at time 16.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -855,6 +953,7 @@ NAND, NOR, and XNOR use two inputs.
 A gate output must have a `wire` or `output` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
+It accepts an optional `tco=` clock-to-output delay field.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
 
@@ -946,6 +1045,31 @@ dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 rst=reset
 The `rst=` field names an active-high reset signal.
 Reset acts asynchronously. It does not wait for a clock edge.
 An asserted reset forces every bit to its initial value.
+
+### Clock-to-output delay
+
+A flip-flop can delay its output updates.
+Use the `tco=N` field.
+The value N must be a non-negative integer.
+The default delay is zero.
+
+```text
+dff state clock=clk d=d q=q init=0 tco=2
+```
+
+A rising clock edge samples the data input at the edge.
+The output commits the captured value N time units later.
+A later data change does not affect the captured value.
+An asserted reset also commits N time units later.
+The initial value settles at time zero without delay.
+The `tco=` field cannot repeat on one flip-flop.
+
+The delay applies to every bit of a wide flip-flop.
+All bits commit together at the same time.
+
+```text
+dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 tco=3
+```
 
 Use `assert` to check a signal value at a fixed time.
 The time must be a non-negative integer.
@@ -1127,6 +1251,7 @@ Deterministic tests also cover VCD vectors, their header declarations, their gro
 Deterministic tests also cover gate delay parsing and invalid delay fields.
 Deterministic tests also cover delayed transitions, delay accumulation, zero-delay behavior, multi-driver delays, and the initial settle.
 Deterministic tests also cover rise and fall delay parsing, conflict rules, direction-specific transitions, and the asymmetric delay demo.
+Deterministic tests also cover clock-to-output delay parsing, invalid tco fields, delayed commits, edge capture, delayed reset, wide register commits, and the golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1135,6 +1260,7 @@ QuickCheck properties also compare the shared bus with a per-time resolution mod
 QuickCheck properties also compare a library adder with its flat version.
 QuickCheck properties also compare a delayed gate with a per-time reference model.
 QuickCheck properties also compare an asymmetric delayed gate with a per-time reference model.
+QuickCheck properties also compare a clock-to-output flip-flop with a delayed reference model.
 QuickCheck properties also compare the counter report with the simulated waveform.
 QuickCheck properties also compare whole-bus input values with per-bit reference values.
 QuickCheck properties also compare every VCD vector value with the per-bit waveform.
@@ -1172,6 +1298,7 @@ CI runs the bus demo with whole-bus input values.
 CI runs the four-state vector demo and compares it with its golden file.
 CI runs the gate delay demo and compares it with its golden file.
 CI runs the asymmetric delay demo and compares it with its golden file.
+CI runs the clock-to-output delay demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1194,6 +1321,11 @@ The `delay=` field sets both delays to one value.
 The `delay=` field cannot combine with `rise=` or `fall=`.
 The initial state settles at time zero without delay.
 Events at time zero ignore the gate delay.
+A flip-flop captures data at the clock edge.
+The captured value commits after the clock-to-output delay.
+The clock-to-output delay applies to an asserted reset too.
+The initial flip-flop value settles at time zero without delay.
+The `tco=` field cannot repeat on one flip-flop.
 A delayed transition uses the input value at its fire time.
 A later input change supersedes an earlier pending transition.
 Zero-delay gates can show combinational settling transients at clock edges and at time zero.
@@ -1227,6 +1359,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.15.0.0 completed the clock-to-output delay for flip-flops.
 Release 0.14.0.0 completed separate rise and fall gate delays.
 Release 0.13.0.0 completed configurable gate delays.
 Release 0.12.0.0 completed multi-bit values in the VCD timeline.
@@ -1243,8 +1376,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add a clock-to-output delay field for flip-flops.
-2. Add a buffer gate to the gate library.
+1. Add a buffer gate to the gate library.
 
 ## License
 

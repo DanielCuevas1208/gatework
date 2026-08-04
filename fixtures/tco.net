@@ -1,0 +1,29 @@
+# Clock-to-output delay demo.
+# The flip-flop output commits two time units after each rising edge.
+# The delay applies to an asserted reset too.
+input d
+input rst
+output q
+output nq
+wire nq
+clock clk period=4
+
+dff state clock=clk d=d q=q init=0 tco=2 rst=rst
+gate NOT invert (q) -> nq
+
+assert q = 0 at 0
+assert q = 0 at 3
+assert q = 1 at 4
+assert q = 1 at 7
+assert q = 0 at 8
+assert q = 0 at 11
+assert q = 1 at 12
+assert q = 1 at 15
+assert q = 0 at 16
+assert q = 0 at 19
+assert q = 1 at 20
+assert nq = 1 at 0
+assert nq = 1 at 3
+assert nq = 0 at 4
+assert nq = 1 at 16
+assert nq = 0 at 20

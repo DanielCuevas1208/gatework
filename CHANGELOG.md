@@ -5,6 +5,26 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.15.0.0] - 2026-08-04
+
+### Added
+
+- Declare a flip-flop clock-to-output delay with the `tco=N` field.
+- The output commits N time units after each rising clock edge.
+- The delay applies to an asserted reset too.
+- The edge captures the data value at the clock edge.
+- A later data change does not affect the captured value.
+- A wide register commits every bit together after its delay.
+- Reject a negative, non-integer, or repeated tco field.
+- Add a clock-to-output delay demo fixture and a golden waveform.
+- Add deterministic tests and a QuickCheck property for the delay.
+
+### Changed
+
+- The scheduler commits flip-flop samples after their declared delay.
+- Bump the package version to 0.15.0.0.
+- Update the golden VCD files to the new version string.
+
 ## [0.14.0.0] - 2026-08-04
 
 ### Added
