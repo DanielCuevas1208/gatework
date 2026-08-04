@@ -12,6 +12,7 @@ module Gatework.Netlist
   , parseNetlistFile
   , parseNetlistFileWithLibraries
   , parseNetlistWithLibraries
+  , resolveInputAssignments
   ) where
 
 import Control.Exception (IOException, try)
@@ -79,6 +80,7 @@ data Netlist = Netlist
   , netlistGates :: [Gate]
   , netlistFlipFlops :: [DFlipFlop]
   , netlistAssertions :: [Assertion]
+  , netlistBusWidths :: [(String, Int)]
   }
   deriving (Eq, Show)
 
@@ -127,10 +129,11 @@ data RawModule = RawModule
 data ParsedNetlist = ParsedNetlist
   { parsedModules :: Map String Module
   , parsedDeclarations :: [Declaration]
+  , parsedBusWidths :: Map String Int
   }
 
 emptyNetlist :: Netlist
-emptyNetlist = Netlist [] [] [] [] [] [] []
+emptyNetlist = Netlist [] [] [] [] [] [] [] []
 
 parseNetlistFile :: FilePath -> IO (Either String Netlist)
 parseNetlistFile = parseNetlistFileWithLibraries []
@@ -165,8 +168,9 @@ parseNetlistWithLibraries libraries source = do
   let signatureModules = signatureOnlyModules combinedModules
   modules <- mapM (resolveModule sources signatureModules) combinedModules
   validateModulesWithSources sources modules
-  declarations <- resolveTopLevel signatureModules rawDeclarations
-  netlist <- flattenParsed (ParsedNetlist modules declarations)
+  widths <- topLevelWidths rawDeclarations
+  declarations <- resolveTopLevel signatureModules widths rawDeclarations
+  netlist <- flattenParsed (ParsedNetlist modules declarations widths)
   _ <- validateNetlist netlist
   pure netlist
 
@@ -474,9 +478,8 @@ moduleWidths raw =
     addWidth widths (RawClock clock) = insertWidth widths (clockSignal clock) 1
     addWidth widths _ = Right widths
 
-resolveTopLevel :: Map String Module -> [RawDeclaration] -> Either String [Declaration]
-resolveTopLevel signatureModules rawDeclarations = do
-  widths <- topLevelWidths rawDeclarations
+resolveTopLevel :: Map String Module -> Map String Int -> [RawDeclaration] -> Either String [Declaration]
+resolveTopLevel signatureModules widths rawDeclarations =
   concat <$> mapM (resolveDeclaration signatureModules widths) rawDeclarations
 
 topLevelWidths :: [RawDeclaration] -> Either String (Map String Int)
@@ -776,7 +779,8 @@ checkModuleFlipFlop moduleDef declared clockSignals flipFlop = do
 flattenParsed :: ParsedNetlist -> Either String Netlist
 flattenParsed parsed = do
   expanded <- concat <$> mapM (expandTop parsed) (parsedDeclarations parsed)
-  pure (foldl' addDeclaration emptyNetlist expanded)
+  let netlist = foldl' addDeclaration emptyNetlist expanded
+  pure netlist {netlistBusWidths = busWidthList (parsedBusWidths parsed)}
 
 expandTop :: ParsedNetlist -> Declaration -> Either String [Declaration]
 expandTop parsed declaration = case declaration of
@@ -858,6 +862,44 @@ netlistSignals netlist = nub
       ++ netlistWires netlist
       ++ map gateOutput (netlistGates netlist)
   )
+
+busWidthList :: Map String Int -> [(String, Int)]
+busWidthList widths =
+  [(name, width) | (name, width) <- Map.toAscList widths, width > 1]
+
+resolveInputAssignments :: Netlist -> [(String, String)] -> Either String [(String, Logic)]
+resolveInputAssignments netlist = fmap concat . mapM resolveOne
+  where
+    widths = Map.fromList (netlistBusWidths netlist)
+    inputs = netlistInputs netlist
+    resolveOne (name, value)
+      | Just width <- Map.lookup name widths = do
+          resolved <- expandBus name width value
+          unless (all ((`elem` inputs) . fst) resolved) $
+            Left ("input override is not an input: " ++ name)
+          pure resolved
+      | otherwise = do
+          logic <- parseInputValue name value
+          pure [(name, logic)]
+
+expandBus :: String -> Int -> String -> Either String [(String, Logic)]
+expandBus name width value
+  | length value /= width =
+      Left ( "bus " ++ name ++ " has width " ++ show width
+          ++ ", but the value has " ++ show (length value) ++ " bits" )
+  | otherwise = sequence
+      [ case parseLogic [char] of
+          Just logic -> Right (bitAt name width index, logic)
+          Nothing ->
+            Left ("input value must be 0, 1, x, or z: " ++ name ++ "=" ++ value)
+      | (index, char) <- zip [width - 1, width - 2 .. 0] value
+      ]
+
+parseInputValue :: String -> String -> Either String Logic
+parseInputValue name value = maybe
+  (Left ("input value must be 0, 1, x, or z: " ++ name ++ "=" ++ value))
+  Right
+  (parseLogic value)
 
 trim :: String -> String
 trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse

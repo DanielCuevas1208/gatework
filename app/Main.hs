@@ -1,8 +1,13 @@
 module Main (main) where
 
 import Data.List (intercalate)
-import Gatework.Logic (Logic, logicChar, parseLogic)
-import Gatework.Netlist (netlistSignals, parseNetlistFileWithLibraries)
+import Gatework.Logic (Logic, logicChar)
+import Gatework.Netlist
+  ( Netlist
+  , netlistSignals
+  , parseNetlistFileWithLibraries
+  , resolveInputAssignments
+  )
 import Gatework.Report (renderReport)
 import Gatework.Simulator
   ( AssertionFailure (..)
@@ -23,8 +28,8 @@ data Options = Options
   , optionDuration :: Integer
   , optionOutput :: FilePath
   , optionOutputExplicit :: Bool
-  , optionInputs :: [(String, Logic)]
-  , optionScheduled :: [(Time, String, Logic)]
+  , optionInputs :: [(String, String)]
+  , optionScheduled :: [(Time, String, String)]
   , optionLibraries :: [FilePath]
   }
 
@@ -55,17 +60,23 @@ run command = do
       case parsed of
         Left message -> failWith message
         Right netlist ->
-          case simulateWithScheduledInputs netlist (optionInputs options) (optionScheduled options) (optionDuration options) of
+          case resolveInputAssignments netlist (optionInputs options) of
             Left message -> failWith message
-            Right simulation -> do
-              wroteFile <- emit command simulation
-              let summaryHandle = if wroteFile then stdout else stderr
-              if wroteFile
-                then putStrLn ("Wrote " ++ optionOutput options)
-                else pure ()
-              hPutStrLn summaryHandle ("Signals: " ++ show (length (netlistSignals netlist)))
-              hPutStrLn summaryHandle ("Duration: " ++ show (optionDuration options) ++ " time units")
-              reportAssertions summaryHandle simulation
+            Right inputOverrides ->
+              case resolveScheduledAssignments netlist (optionScheduled options) of
+                Left message -> failWith message
+                Right scheduled ->
+                  case simulateWithScheduledInputs netlist inputOverrides scheduled (optionDuration options) of
+                    Left message -> failWith message
+                    Right simulation -> do
+                      wroteFile <- emit command simulation
+                      let summaryHandle = if wroteFile then stdout else stderr
+                      if wroteFile
+                        then putStrLn ("Wrote " ++ optionOutput options)
+                        else pure ()
+                      hPutStrLn summaryHandle ("Signals: " ++ show (length (netlistSignals netlist)))
+                      hPutStrLn summaryHandle ("Duration: " ++ show (optionDuration options) ++ " time units")
+                      reportAssertions summaryHandle simulation
 
 commandOptions :: Command -> Options
 commandOptions (CommandRun options) = options
@@ -129,14 +140,21 @@ parseOptions arguments = parseMore defaultOptions arguments
         parseMore options {optionScheduled = optionScheduled options ++ [(time, name, logic) | (name, logic) <- values]} rest
       option : _ -> Left ("unknown option: " ++ option)
 
-parseAssignments :: String -> Either String [(String, Logic)]
+parseAssignments :: String -> Either String [(String, String)]
 parseAssignments value = mapM parseAssignment (splitOn ',' value)
   where
     parseAssignment assignment = case break (== '=') assignment of
-      (name, '=' : rawLogic) | not (null name) -> case parseLogic rawLogic of
-        Just logic -> Right (name, logic)
-        Nothing -> Left ("input value must be 0, 1, x, or z: " ++ assignment)
-      _ -> Left ("input assignment must use signal=0, signal=1, signal=x, or signal=z: " ++ assignment)
+      (name, '=' : rawValue) | not (null name) && not (null rawValue) ->
+        Right (name, rawValue)
+      _ -> Left ("input assignment must use signal=value: " ++ assignment)
+
+resolveScheduledAssignments :: Netlist -> [(Time, String, String)]
+  -> Either String [(Time, String, Logic)]
+resolveScheduledAssignments netlist = fmap concat . mapM step
+  where
+    step (time, name, value) = do
+      resolved <- resolveInputAssignments netlist [(name, value)]
+      pure [(time, signal, logic) | (signal, logic) <- resolved]
 
 splitOn :: Char -> String -> [String]
 splitOn delimiter value = case break (== delimiter) value of
@@ -151,7 +169,7 @@ failWith message = do
 
 usage :: String
 usage = intercalate "\n"
-  [ "gatework [report] --netlist FILE [--library FILE] [--duration N] [--output FILE] [--set signal=0,signal=1,signal=x,signal=z] [--at TIME signal=0,signal=1,signal=x,signal=z]"
+  [ "gatework [report] --netlist FILE [--library FILE] [--duration N] [--output FILE] [--set signal=value] [--at TIME signal=value]"
   , ""
   , "Simulate a netlist and write a VCD waveform."
   , "Run 'gatework report' to write a text waveform table instead."
@@ -159,6 +177,8 @@ usage = intercalate "\n"
   , "Use --library to load reusable module definitions from another file."
   , "Repeat --library to load more than one module file."
   , "Use --at to change input signals at a fixed time during the run."
-  , "Use x for an unknown value and z for a floating value."
+  , "A signal value is 0, 1, x, or z."
+  , "Set a whole bus with a bit string, for example --set a=0101."
+  , "The bit string lists the most-significant bit first."
   , "Check assert declarations in the netlist against the waveform."
   ]

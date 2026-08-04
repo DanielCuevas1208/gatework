@@ -5,6 +5,22 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.11.0.0] - 2026-08-03
+
+### Added
+
+- Set a whole input bus on the command line with one bit string.
+- Accept whole-bus bit strings in the --set and --at options.
+- The bit string lists the most-significant bit first.
+- The value may use 0, 1, x, and z.
+- Reject a value that does not match the bus width.
+- Add deterministic tests and a QuickCheck property for whole-bus values.
+- Run the bus demo with whole-bus values in the CI workflow.
+
+### Changed
+
+- Bump the package version to 0.11.0.0.
+
 ## [0.10.0.0] - 2026-08-03
 
 ### Added

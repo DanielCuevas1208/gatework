@@ -15,6 +15,7 @@ import Gatework.Netlist
   , parseNetlist
   , parseNetlistFileWithLibraries
   , parseNetlistWithLibraries
+  , resolveInputAssignments
   )
 import Gatework.Report (renderReport)
 import Gatework.Simulator
@@ -264,6 +265,15 @@ main = do
     , testReportHeader
     , testReportCounterTable
     , testGoldenCounterReport
+    , testWholeBusAssignmentExpansion
+    , testWholeBusAssignmentFourState
+    , testWholeBusWidthMismatch
+    , testWholeBusInvalidCharacter
+    , testWholeBusBitReference
+    , testWholeBusNonInputRejected
+    , testWholeBusScalarValue
+    , testWholeBusScheduledRegister
+    , testWholeBusGoldenVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -309,6 +319,7 @@ main = do
     , ("shared bus follows the resolution model", quickCheckResult (propSharedBusResolution shared))
     , ("library adder matches the flat adder", quickCheckResult (propLibraryAdderMatchesFlat adder libadder))
     , ("counter report matches the waveform", quickCheckResult (propCounterReportMatchesWaveform counter))
+    , ("whole-bus values match per-bit values", quickCheckResult propWholeBusMatchesBitwise)
     ]
     $ \(label, action) -> do
       result <- action
@@ -1838,6 +1849,115 @@ testGoldenCounterReport = do
         pure (renderReport simulation)
   check "counter report matches golden file" (actual == Right golden)
 
+wholeBusNetlist :: Either String Netlist
+wholeBusNetlist = parseNetlist (unlines
+  [ "input a[4]"
+  , "output y[4]"
+  , "wire y[4]"
+  , "gate NOT inv (a) -> y"
+  ])
+
+testWholeBusAssignmentExpansion :: IO Bool
+testWholeBusAssignmentExpansion = case wholeBusNetlist of
+  Left _ -> check "whole-bus values expand most-significant bit first" False
+  Right netlist ->
+    check "whole-bus values expand most-significant bit first" $
+      resolveInputAssignments netlist [("a", "0101")]
+        == Right
+          [ ("a[3]", Low)
+          , ("a[2]", High)
+          , ("a[1]", Low)
+          , ("a[0]", High)
+          ]
+
+testWholeBusAssignmentFourState :: IO Bool
+testWholeBusAssignmentFourState = case wholeBusNetlist of
+  Left _ -> check "whole-bus values accept x and z" False
+  Right netlist ->
+    check "whole-bus values accept x and z" $
+      resolveInputAssignments netlist [("a", "1z0x")]
+        == Right
+          [ ("a[3]", High)
+          , ("a[2]", TriState)
+          , ("a[1]", Low)
+          , ("a[0]", Undefined)
+          ]
+
+testWholeBusWidthMismatch :: IO Bool
+testWholeBusWidthMismatch = case wholeBusNetlist of
+  Left _ -> check "whole-bus values reject a width mismatch" False
+  Right netlist ->
+    check "whole-bus values reject a width mismatch" $
+      resolveInputAssignments netlist [("a", "01")]
+        == Left "bus a has width 4, but the value has 2 bits"
+
+testWholeBusInvalidCharacter :: IO Bool
+testWholeBusInvalidCharacter = case wholeBusNetlist of
+  Left _ -> check "whole-bus values reject invalid characters" False
+  Right netlist ->
+    check "whole-bus values reject invalid characters" $
+      resolveInputAssignments netlist [("a", "0a1b")]
+        == Left "input value must be 0, 1, x, or z: a=0a1b"
+
+testWholeBusBitReference :: IO Bool
+testWholeBusBitReference = case wholeBusNetlist of
+  Left _ -> check "bit references still set one signal" False
+  Right netlist ->
+    check "bit references still set one signal" $
+      resolveInputAssignments netlist [("a[0]", "1"), ("a[2]", "0")]
+        == Right [("a[0]", High), ("a[2]", Low)]
+
+testWholeBusNonInputRejected :: IO Bool
+testWholeBusNonInputRejected = case wholeBusNetlist of
+  Left _ -> check "whole-bus values reject a non-input bus" False
+  Right netlist ->
+    check "whole-bus values reject a non-input bus" $
+      resolveInputAssignments netlist [("y", "0101")]
+        == Left "input override is not an input: y"
+
+testWholeBusScalarValue :: IO Bool
+testWholeBusScalarValue = case parseNetlist (unlines
+  [ "input a"
+  , "wire out"
+  , "gate NOT inv (a) -> out"
+  ]) of
+  Left _ -> check "scalar inputs keep single values" False
+  Right netlist ->
+    check "scalar inputs keep single values" $
+      resolveInputAssignments netlist [("a", "1")]
+        == Right [("a", High)]
+
+testWholeBusScheduledRegister :: IO Bool
+testWholeBusScheduledRegister = case parseNetlist (unlines
+  [ "input a[4]"
+  , "output q[4]"
+  , "clock clk period=2"
+  , "dff reg clock=clk d=a q=q init=0,0,0,0"
+  ]) of
+  Left _ -> check "scheduled whole-bus values sample each bit" False
+  Right netlist -> check "scheduled whole-bus values sample each bit" $ case
+    resolveInputAssignments netlist [("a", "0011")] of
+      Left _ -> False
+      Right resolved -> case
+        simulateWithScheduledInputs netlist [] [(2, name, logic) | (name, logic) <- resolved] 4 of
+          Right simulation ->
+            valueAt simulation "q[0]" 3 == High
+              && valueAt simulation "q[1]" 3 == High
+              && valueAt simulation "q[2]" 3 == Low
+              && valueAt simulation "q[3]" 3 == Low
+          Left _ -> False
+
+testWholeBusGoldenVCD :: IO Bool
+testWholeBusGoldenVCD = do
+  source <- readFile "fixtures/bus.net"
+  golden <- readFile "fixtures/bus.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        overrides <- resolveInputAssignments netlist [("a", "0101"), ("b", "1010")]
+        simulation <- simulateWithInputs netlist overrides 3
+        pure (renderVCD simulation)
+  check "whole-bus VCD matches golden file" (actual == Right golden)
+
 splitOn :: Char -> String -> [String]
 splitOn delimiter value = case break (== delimiter) value of
   (part, _ : rest) -> part : splitOn delimiter rest
@@ -2146,6 +2266,24 @@ propCounterReportMatchesWaveform netlist =
       , (time, _) <- entries
       ]
 
+propWholeBusMatchesBitwise :: Property
+propWholeBusMatchesBitwise =
+  forAll (choose (0, 15)) $ \aValue ->
+    forAll (choose (0, 15)) $ \bValue ->
+      case busXorNetlist of
+        Left _ -> property False
+        Right netlist ->
+          case resolveInputAssignments netlist
+            [ ("a", bitsText 4 aValue), ("b", bitsText 4 bValue) ] of
+            Left _ -> property False
+            Right wholeBus ->
+              case ( simulateWithInputs netlist wholeBus 0
+                   , simulateWithInputs netlist (busInputs "a" aValue 4 ++ busInputs "b" bValue 4) 0
+                   ) of
+                (Right wholeSim, Right bitSim) ->
+                  property (renderVCD wholeSim == renderVCD bitSim)
+                _ -> property False
+
 propGatesFixture :: Netlist -> Property
 propGatesFixture netlist =
   forAll (elements [Low, High]) $ \a ->
@@ -2392,6 +2530,10 @@ busInputs base value width =
   [ (base ++ "[" ++ show index ++ "]", logicForBit (bit index value))
   | index <- [0 .. width - 1]
   ]
+
+bitsText :: Int -> Int -> String
+bitsText width value =
+  [if bit index value == 1 then '1' else '0' | index <- [width - 1, width - 2 .. 0]]
 
 busValueAt :: Simulation -> String -> Int -> Time -> Int
 busValueAt simulation base width time =

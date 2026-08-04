@@ -44,6 +44,7 @@ You can do these tasks:
 - Pass a bus through a module port.
 - Sample a whole bus into a register on one clock edge.
 - Check a single bus bit with an assertion.
+- Set a whole bus on the command line with one bit string.
 
 ## Architecture
 
@@ -469,7 +470,7 @@ The `NOT` gate shows the unknown until the flip-flop samples data.
 Run four-bit bus operations with gates and a register.
 
 ```powershell
-cabal run gatework -- --netlist fixtures/bus.net --duration 3 --output bus.vcd --set 'a[0]=1,a[2]=1,b[1]=1,b[3]=1'
+cabal run gatework -- --netlist fixtures/bus.net --duration 3 --output bus.vcd --set a=0101,b=1010
 ```
 
 The command writes this output:
@@ -480,6 +481,11 @@ Signals: 24
 Duration: 3 time units
 Assertions: 7 passed
 ```
+
+The value `a=0101` sets the whole input bus `a`.
+The string lists bits from the most-significant bit down.
+So `a[3]=0`, `a[2]=1`, `a[1]=0`, and `a[0]=1`.
+This command gives the same waveform as per-bit assignments.
 
 The inputs `a` and `b` are four-bit buses.
 The gate `XOR combine` applies bitwise across both buses.
@@ -799,6 +805,23 @@ assert s[0] = 1 at 0
 assert s[2] = 0 at 4
 ```
 
+### Whole-bus input values
+
+The command line sets one bit or a whole bus.
+
+```text
+--set a[0]=1
+--set a=0101
+--at 2 b=1010
+```
+
+A bit assignment names one signal.
+The value must be 0, 1, x, or z.
+A bus assignment names the bus without brackets.
+The value must match the bus width.
+The bit string lists the most-significant bit first.
+The value may use 0, 1, x, and z.
+
 ### Modules and instances
 
 A module is a reusable subcircuit.
@@ -885,6 +908,7 @@ Deterministic tests also cover bus declarations, bitwise gates, bit references, 
 Deterministic tests also cover multi-driver resolution, scheduled driver changes, flip-flop output exclusivity, the shared-bus fixture, and its golden output.
 Deterministic tests also cover module library loading, cross-library module references, duplicate module names, and library file validation.
 Deterministic tests also cover the report command, its header order, its counter table, and its golden output.
+Deterministic tests also cover whole-bus input values, their bit order, their error cases, scheduled whole-bus transitions, and their golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -892,6 +916,7 @@ QuickCheck properties also compare a bus circuit with a bitwise reference model.
 QuickCheck properties also compare the shared bus with a per-time resolution model.
 QuickCheck properties also compare a library adder with its flat version.
 QuickCheck properties also compare the counter report with the simulated waveform.
+QuickCheck properties also compare whole-bus input values with per-bit reference values.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -919,6 +944,7 @@ Golden tests compare the counter, register, reset, two-bit register, assertion, 
 The golden report test compares the counter report table with its golden file.
 CI runs every demo and compares its output with the golden file.
 CI runs the report demo and compares it with the report golden file.
+CI runs the bus demo with whole-bus input values.
 CI confirms that a missing library file stops the run.
 
 ## Limitations
@@ -952,8 +978,6 @@ A bus expands into single-bit signals, so the VCD stays flat.
 A flip-flop bus output must have a `wire` or `output` declaration.
 A reference to a whole bus uses the declared width.
 An assertion addresses one bit, not a whole bus.
-Input assignments on the command line address one bit.
-The CLI does not accept whole-bus values.
 One module declaration cannot live inside another.
 An instance output must connect to a declared signal.
 The dotted instance names are part of the VCD signal names.
@@ -963,6 +987,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.11.0.0 completed whole-bus input values on the command line.
 Release 0.10.0.0 completed the waveform report command.
 Release 0.9.0.0 completed module libraries.
 Release 0.8.0.0 completed multi-driver wire resolution.
@@ -975,8 +1000,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add whole-bus input values on the command line.
-2. Add multi-bit values in the VCD timeline.
+1. Add multi-bit values in the VCD timeline.
 
 ## License
 
