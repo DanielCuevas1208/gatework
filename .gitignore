@@ -5,6 +5,8 @@ dist-newstyle/
 *.dyn_o
 *.vcd
 !fixtures/*.golden.vcd
+*.report
+!fixtures/*.golden.report
 .haskell-tools/
 .stack-work/
 .idea/

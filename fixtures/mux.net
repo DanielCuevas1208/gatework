@@ -1,0 +1,19 @@
+# A multiplexer selects data and resolves equal branches when the selector is unknown.
+input d0
+input d1
+input sel
+output y
+output delayed
+wire y
+wire delayed
+gate MUX choose (d0,d1,sel) -> y
+gate MUX slow (d0,d1,sel) -> delayed delay=2
+assert y = 0 at 0
+assert delayed = 0 at 0
+assert y = 1 at 2
+assert delayed = 0 at 2
+assert y = x at 4
+assert delayed = 1 at 4
+assert y = 1 at 6
+assert delayed = x at 6
+assert delayed = 1 at 8

@@ -14,7 +14,7 @@ import Data.List (foldl')
 data Logic = Low | High | Undefined | TriState
   deriving (Eq, Ord, Read, Show)
 
-data GateType = And | Or | Xor | Not | Nand | Nor | Xnor | Tribuf
+data GateType = And | Or | Xor | Not | Nand | Nor | Xnor | Buf | Mux | Tribuf
   deriving (Eq, Ord, Read, Show)
 
 gateArity :: GateType -> Int
@@ -25,6 +25,8 @@ gateArity Not = 1
 gateArity Nand = 2
 gateArity Nor = 2
 gateArity Xnor = 2
+gateArity Buf = 1
+gateArity Mux = 3
 gateArity Tribuf = 2
 
 parseGateType :: String -> Maybe GateType
@@ -36,6 +38,8 @@ parseGateType value = case map toLower value of
   "nand" -> Just Nand
   "nor" -> Just Nor
   "xnor" -> Just Xnor
+  "buf" -> Just Buf
+  "mux" -> Just Mux
   "tribuf" -> Just Tribuf
   _ -> Nothing
 
@@ -79,6 +83,12 @@ evalGate Xnor inputs
 evalGate Not inputs = case inputs of
   input : _ -> invert input
   [] -> Undefined
+evalGate Buf inputs = case inputs of
+  [input] -> bufferValue input
+  _ -> Undefined
+evalGate Mux inputs = case inputs of
+  [lowData, highData, select] -> muxValue lowData highData select
+  _ -> Undefined
 evalGate Tribuf inputs = case inputs of
   [dataValue, enable] -> tribufValue dataValue enable
   _ -> Undefined
@@ -91,6 +101,22 @@ invert Low = High
 invert High = Low
 invert Undefined = Undefined
 invert TriState = Undefined
+
+bufferValue :: Logic -> Logic
+bufferValue TriState = Undefined
+bufferValue value = value
+
+muxValue :: Logic -> Logic -> Logic -> Logic
+muxValue lowData highData select = case select of
+  Low -> bufferValue lowData
+  High -> bufferValue highData
+  Undefined -> commonValue
+  TriState -> commonValue
+  where
+    commonValue =
+      let normalizedLow = bufferValue lowData
+          normalizedHigh = bufferValue highData
+      in if normalizedLow == normalizedHigh then normalizedLow else Undefined
 
 tribufValue :: Logic -> Logic -> Logic
 tribufValue dataValue enable = case enable of
