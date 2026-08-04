@@ -1,0 +1,17 @@
+# A plain buffer preserves known values and reads floating input as unknown.
+input d
+output y
+output delayed
+wire y
+wire delayed
+gate BUF pass (d) -> y
+gate BUF slow (d) -> delayed delay=2
+assert y = 0 at 0
+assert delayed = 0 at 0
+assert y = 1 at 2
+assert delayed = 0 at 2
+assert y = 0 at 4
+assert delayed = 1 at 4
+assert y = x at 6
+assert delayed = 0 at 6
+assert delayed = x at 8

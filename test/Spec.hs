@@ -158,6 +158,10 @@ main = do
   deterministic <- sequence
     [ testParser
     , testParserAcceptsCommentsAndBlankLines
+    , testBufferTruth
+    , testBufferFixture
+    , testBufferBus
+    , testGoldenBufferVCD
     , testParserRejectsUnknownGate
     , testParserRejectsWrongArity
     , testParserRejectsEmptyInputs
@@ -343,6 +347,7 @@ main = do
     , ("four-state gates match the two-state reference", quickCheckResult propTwoStateMatchesReference)
     , ("undefined inputs commute in binary gates", quickCheckResult propUndefinedCommutative)
     , ("TRIBUF follows its truth table", quickCheckResult propTribufTruth)
+    , ("BUF follows its four-state truth table", quickCheckResult propBufferTruth)
     , ("an enabled buffer passes known data", quickCheckResult propTribufEnable)
     , ("tri-state fixture stays consistent", quickCheckResult (propTribufFixtureSound tristate))
     , ("unknown fixture starts unclocked", quickCheckResult (propUnknownFixtureSampling unknown))
@@ -1122,6 +1127,66 @@ testNandNorXnorTruth =
       , evalGate Xnor [High, Low] == Low
       , evalGate Xnor [High, High] == High
       ]
+
+testBufferTruth :: IO Bool
+testBufferTruth =
+  check "BUF passes known values and maps floating input to unknown" $
+    and
+      [ evalGate Buf [Low] == Low
+      , evalGate Buf [High] == High
+      , evalGate Buf [Undefined] == Undefined
+      , evalGate Buf [TriState] == Undefined
+      , evalGate Buf [] == Undefined
+      ]
+
+testBufferFixture :: IO Bool
+testBufferFixture = do
+  source <- readFile "fixtures/buffer.net"
+  case parseNetlist source of
+    Left _ -> check "buffer fixture simulates delayed copies" False
+    Right netlist -> check "buffer fixture simulates delayed copies" $ case
+      simulateWithScheduledInputs netlist [ ("d", Low) ]
+        [(2, "d", High), (4, "d", Low), (6, "d", TriState)] 8 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 9
+            && valueAt simulation "y" 0 == Low
+            && valueAt simulation "y" 2 == High
+            && valueAt simulation "y" 6 == Undefined
+            && valueAt simulation "delayed" 2 == Low
+            && valueAt simulation "delayed" 4 == High
+            && valueAt simulation "delayed" 6 == Low
+            && valueAt simulation "delayed" 8 == Undefined
+        Left _ -> False
+
+testBufferBus :: IO Bool
+testBufferBus = case parseNetlist (unlines
+  [ "input a[4]"
+  , "output y[4]"
+  , "wire y[4]"
+  , "gate BUF copy (a) -> y"
+  ]) of
+  Left _ -> check "BUF applies bitwise across a bus" False
+  Right netlist -> check "BUF applies bitwise across a bus" $ case
+    simulateWithInputs netlist (busInputs "a" 9 4) 0 of
+    Right simulation ->
+      valueAt simulation "y[0]" 0 == High
+        && valueAt simulation "y[1]" 0 == Low
+        && valueAt simulation "y[2]" 0 == Low
+        && valueAt simulation "y[3]" 0 == High
+    Left _ -> False
+
+testGoldenBufferVCD :: IO Bool
+testGoldenBufferVCD = do
+  source <- readFile "fixtures/buffer.net"
+  golden <- readFile "fixtures/buffer.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <-
+          simulateWithScheduledInputs netlist [ ("d", Low) ]
+            [(2, "d", High), (4, "d", Low), (6, "d", TriState)] 8
+        pure (renderVCD simulation)
+  check "buffer VCD matches golden file" (actual == Right golden)
 
 testGatesFixture :: IO Bool
 testGatesFixture = do
@@ -2506,6 +2571,9 @@ evalTwoState Xnor inputs = invertTwo (foldl' xorTwo Low inputs)
 evalTwoState Not inputs = case inputs of
   input : _ -> invertTwo input
   [] -> Low
+evalTwoState Buf inputs = case inputs of
+  [input] -> if input == High then High else Low
+  _ -> Low
 evalTwoState Tribuf _ = Low
 
 xorTwo :: Logic -> Logic -> Logic
@@ -2527,6 +2595,7 @@ propTwoStateMatchesReference (Known left) (Known right) =
     , evalGate Nor [left, right] == evalTwoState Nor [left, right]
     , evalGate Xnor [left, right] == evalTwoState Xnor [left, right]
     , evalGate Not [left] == evalTwoState Not [left]
+    , evalGate Buf [left] == evalTwoState Buf [left]
     ]
 
 propUndefinedCommutative :: Known -> Bool
@@ -2555,6 +2624,10 @@ propTribufEnable :: Known -> Bool
 propTribufEnable (Known dataValue) =
   evalGate Tribuf [dataValue, Low] == TriState
     && evalGate Tribuf [dataValue, High] == dataValue
+
+propBufferTruth :: FourState -> Bool
+propBufferTruth (FourState value) =
+  evalGate Buf [value] == if value == TriState then Undefined else value
 
 propTribufFixtureSound :: Netlist -> Property
 propTribufFixtureSound netlist =

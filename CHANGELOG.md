@@ -5,6 +5,20 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.16.0.0] - 2026-08-04
+
+### Added
+
+- Add the `BUF` gate for non-inverting signal transfer.
+- Pass low, high, and unknown values through `BUF`.
+- Convert floating `z` input to unknown `x` inside `BUF`.
+- Support `BUF` on buses, modules, and delayed gate paths.
+- Add a buffer waveform fixture, golden VCD, deterministic tests, and a QuickCheck property.
+
+### Changed
+
+- Bump the package version to 0.16.0.0.
+
 ## [0.15.0.0] - 2026-08-04
 
 ### Added

@@ -1,0 +1,41 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.16.0.0
+$end
+$comment
+  assert y = 0 at 0
+  assert delayed = 0 at 0
+  assert y = 1 at 2
+  assert delayed = 0 at 2
+  assert y = 0 at 4
+  assert delayed = 1 at 4
+  assert y = x at 6
+  assert delayed = 0 at 6
+  assert delayed = x at 8
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! d $end
+$var wire 1 " y $end
+$var wire 1 # delayed $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0"
+0#
+#2
+1!
+1"
+#4
+0!
+0"
+1#
+#6
+z!
+x"
+0#
+#8
+x#

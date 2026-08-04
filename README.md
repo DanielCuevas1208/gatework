@@ -58,6 +58,7 @@ You can do these tasks:
 - Watch a flip-flop output commit after its clock-to-output delay.
 - Capture data at the clock edge, not at the commit time.
 - Delay an asserted reset by the same amount.
+- Use a non-inverting `BUF` gate for known and unknown signal paths.
 
 ## Architecture
 
@@ -321,6 +322,35 @@ The run reports a pass only when every assertion holds.
 | 2 | 1 | 1 | 0 | 0 | 1 |
 | 4 | 1 | 0 | 1 | 0 | 0 |
 | 6 | 0 | 0 | 1 | 1 | 1 |
+
+## Buffer gate demo
+
+Run a direct buffer and a delayed buffer.
+
+```powershell
+cabal run gatework -- --netlist fixtures/buffer.net --duration 8 --output buffer.vcd --set d=0 --at 2 d=1 --at 4 d=0 --at 6 d=z
+```
+
+The command writes this output:
+
+```text
+Wrote buffer.vcd
+Signals: 3
+Duration: 8 time units
+Assertions: 9 passed
+```
+
+`BUF` passes low, high, and unknown values.
+It maps a floating `z` input to `x`, because ordinary gates read floating inputs as unknown.
+The delayed instance applies the existing gate delay rules.
+
+| Time | d | y | delayed |
+| --- | --- | --- | --- |
+| 0 | 0 | 0 | 0 |
+| 2 | 1 | 1 | 0 |
+| 4 | 0 | 0 | 1 |
+| 6 | z | x | 0 |
+| 8 | z | x | x |
 
 ## Hierarchical adder demo
 
@@ -930,6 +960,31 @@ The output `q` commits to 1 at time 4.
 The reset rises at time 14.
 The output `q` stays 1 until the reset commit lands at time 16.
 
+The file `fixtures/buffer.golden.vcd` holds the buffer demo waveform.
+Its timeline shows direct transfer, delayed transfer, and floating-input handling:
+
+```text
+#0
+0!
+0"
+0#
+#2
+1!
+1"
+#4
+0!
+0"
+1#
+#6
+z!
+x"
+0#
+#8
+x#
+```
+
+Here `!` is `d`, `"` is `y`, and `#` is `delayed`.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -948,7 +1003,7 @@ gate AND combine (n,b) -> y
 dff state clock=clk d=a q=state_q init=0
 ```
 
-Supported gates are AND, OR, XOR, NAND, NOR, XNOR, NOT, and TRIBUF.
+Supported gates are AND, OR, XOR, NAND, NOR, XNOR, NOT, BUF, and TRIBUF.
 NAND, NOR, and XNOR use two inputs.
 A gate output must have a `wire` or `output` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
@@ -956,6 +1011,14 @@ It accepts optional `init=`, `rst=`, and `width=` fields.
 It accepts an optional `tco=` clock-to-output delay field.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
+
+The `BUF` gate is a non-inverting buffer.
+It passes low, high, and unknown values.
+It converts a floating `z` input to unknown `x`.
+
+```text
+gate BUF pass (d) -> y
+```
 
 The `TRIBUF` gate is a tri-state buffer.
 Its first input is the data signal.
@@ -1252,6 +1315,7 @@ Deterministic tests also cover gate delay parsing and invalid delay fields.
 Deterministic tests also cover delayed transitions, delay accumulation, zero-delay behavior, multi-driver delays, and the initial settle.
 Deterministic tests also cover rise and fall delay parsing, conflict rules, direction-specific transitions, and the asymmetric delay demo.
 Deterministic tests also cover clock-to-output delay parsing, invalid tco fields, delayed commits, edge capture, delayed reset, wide register commits, and the golden output.
+Deterministic tests also cover BUF truth values, bus behavior, delayed buffer behavior, and the buffer golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1264,6 +1328,7 @@ QuickCheck properties also compare a clock-to-output flip-flop with a delayed re
 QuickCheck properties also compare the counter report with the simulated waveform.
 QuickCheck properties also compare whole-bus input values with per-bit reference values.
 QuickCheck properties also compare every VCD vector value with the per-bit waveform.
+QuickCheck properties also cover BUF behavior across all four logic values.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -1275,7 +1340,8 @@ The entry-point property shows that both simulation entry points produce identic
 The assertion property shows that real values pass and inverted values fail.
 The hierarchy property shows that the hierarchical circuits match the flat circuits.
 The four-state property shows that the gates keep their two-state behavior for known inputs.
-The buffer properties show that an enabled buffer passes data and a disabled buffer floats.
+The tri-state buffer property shows that an enabled driver passes data and a disabled driver floats.
+The BUF property shows that direct transfer preserves known values and maps floating input to unknown.
 The bus XOR property compares a bus gate with per-bit evaluation.
 The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
@@ -1288,8 +1354,9 @@ The asymmetric-delay property compares each output sample with the directional r
 
 ## Test status
 
-All tests pass on GHC 9.6.7 with Cabal 3.14 in the bundled container.
-The CI workflow runs the same checks on Ubuntu with GHC 9.6.6.
+The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
+This workspace could not run Cabal because the executable is unavailable.
+The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
 Golden tests compare each fixture VCD with its golden file.
 The golden report test compares the counter report table with its golden file.
 CI runs every demo and compares its output with the golden file.
@@ -1299,6 +1366,7 @@ CI runs the four-state vector demo and compares it with its golden file.
 CI runs the gate delay demo and compares it with its golden file.
 CI runs the asymmetric delay demo and compares it with its golden file.
 CI runs the clock-to-output delay demo and compares it with its golden file.
+CI runs the buffer demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1306,6 +1374,7 @@ CI confirms that an invalid gate delay stops the run.
 
 The simulator uses four logic values: low, high, unknown, and floating.
 A floating value reads as unknown inside a gate.
+The BUF gate preserves low, high, and unknown values.
 Several gates can drive one wire.
 The simulator resolves the driver values into one wire value.
 Resolution treats z as neutral and known values as dominant.
@@ -1359,6 +1428,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.16.0.0 completed the BUF gate and its waveform evidence.
 Release 0.15.0.0 completed the clock-to-output delay for flip-flops.
 Release 0.14.0.0 completed separate rise and fall gate delays.
 Release 0.13.0.0 completed configurable gate delays.
@@ -1376,7 +1446,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add a buffer gate to the gate library.
+1. Expand the gate library with additional circuit primitives.
 
 ## License
 

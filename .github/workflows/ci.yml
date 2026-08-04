@@ -108,6 +108,10 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/tco.net --duration 22 --output /tmp/tco.vcd --set d=1 --at 4 d=0 --at 8 d=1 --at 14 rst=1 --at 16 rst=0
       - name: Compare the clock-to-output delay demo with the golden file
         run: diff fixtures/tco.golden.vcd /tmp/tco.vcd
+      - name: Run the buffer demo
+        run: cabal run gatework -- --netlist fixtures/buffer.net --duration 8 --output /tmp/buffer.vcd --set d=0 --at 2 d=1 --at 4 d=0 --at 6 d=z
+      - name: Compare the buffer demo with the golden file
+        run: diff fixtures/buffer.golden.vcd /tmp/buffer.vcd
       - name: Confirm a missing library file stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/missing.net --duration 0 --output /tmp/none.vcd 2>/tmp/none.log; then
