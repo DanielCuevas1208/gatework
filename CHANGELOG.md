@@ -5,6 +5,21 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.18.0.0] - 2026-08-12
+
+### Added
+
+- Add the `MAJ` gate with `(a,b,c)` inputs.
+- Return high or low when at least two inputs share that value.
+- Return unknown when no known value reaches a majority.
+- Treat floating inputs as unknown during voting.
+- Support `MAJ` on buses, modules, and delayed gate paths.
+- Add a majority waveform fixture, golden VCD, deterministic tests, and a QuickCheck property.
+
+### Changed
+
+- Bump the package version to 0.18.0.0.
+
 ## [0.17.0.0] - 2026-08-04
 
 ### Added

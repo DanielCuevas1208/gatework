@@ -60,6 +60,7 @@ You can do these tasks:
 - Delay an asserted reset by the same amount.
 - Use a non-inverting `BUF` gate for known and unknown signal paths.
 - Select data with a three-input `MUX` gate.
+- Vote across three inputs with a four-state `MAJ` gate.
 
 ## Architecture
 
@@ -105,6 +106,9 @@ The assertion checker compares declared expectations with the waveform.
 The VCD writer uses stable signal order and stable identifiers.
 The VCD writer groups bus bits into multi-bit vectors.
 The report writer prints one row per change time.
+The `MAJ` gate normalizes floating inputs before it counts known votes.
+The `MAJ` gate returns a known value when two inputs agree.
+The `MAJ` gate returns unknown when neither value reaches two votes.
 
 The repository layout is:
 
@@ -384,6 +388,42 @@ The delayed instance shows the same behavior two time units later.
 | 4 | 0 | 1 | x | x | 1 |
 | 6 | 1 | 1 | x | 1 | x |
 | 8 | 1 | 1 | z | 1 | 1 |
+
+## Majority gate demo
+
+Run a three-input voter with delayed output.
+
+```powershell
+cabal run gatework -- --netlist fixtures/majority.net --duration 20 --output majority.vcd --set a=0,b=0,c=1 --at 2 c=0 --at 4 a=1 --at 6 b=1 --at 10 c=x --at 12 a=0 --at 16 b=z --at 18 c=0
+```
+
+The command writes this output:
+
+```text
+Wrote majority.vcd
+Signals: 5
+Duration: 20 time units
+Assertions: 13 passed
+```
+
+`MAJ` returns the value held by at least two inputs.
+Floating inputs become unknown before voting.
+An unknown input does not hide a known majority.
+The delayed instance commits two time units later.
+
+| Time | a | b | c | y | delayed |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 0 | 1 | 0 | 0 |
+| 2 | 0 | 0 | 0 | 0 | 0 |
+| 4 | 1 | 0 | 0 | 0 | 0 |
+| 6 | 1 | 1 | 0 | 1 | 0 |
+| 8 | 1 | 1 | 0 | 1 | 1 |
+| 10 | 1 | 1 | x | 1 | 1 |
+| 12 | 0 | 1 | x | x | 1 |
+| 14 | 0 | 1 | x | x | x |
+| 16 | 0 | z | x | x | x |
+| 18 | 0 | z | 0 | 0 | x |
+| 20 | 0 | z | 0 | 0 | 0 |
 
 ## Hierarchical adder demo
 
@@ -1018,6 +1058,39 @@ x#
 
 Here `!` is `d`, `"` is `y`, and `#` is `delayed`.
 
+The file `fixtures/majority.golden.vcd` holds the majority demo waveform.
+Its timeline shows a known vote, an unresolved vote, and delayed commits:
+
+```text
+#0
+0!
+0"
+1#
+0$
+0%
+#6
+1"
+1$
+#8
+1%
+#10
+x#
+#12
+0!
+x$
+#14
+x%
+#16
+z"
+#18
+0#
+0$
+#20
+0%
+```
+
+Here `!` is `a`, `"` is `b`, `#` is `c`, `$` is `y`, and `%` is `delayed`.
+
 ## Netlist format
 
 Use one declaration per line.
@@ -1036,8 +1109,9 @@ gate AND combine (n,b) -> y
 dff state clock=clk d=a q=state_q init=0
 ```
 
-Supported gates are AND, OR, XOR, NAND, NOR, XNOR, NOT, BUF, MUX, and TRIBUF.
+Supported gates are AND, OR, XOR, NAND, NOR, XNOR, NOT, BUF, MUX, MAJ, and TRIBUF.
 NAND, NOR, and XNOR use two inputs.
+A MAJ gate uses three inputs.
 A gate output must have a `wire` or `output` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
@@ -1062,6 +1136,16 @@ A high selector selects the second input.
 An unknown selector compares the normalized data values.
 Equal values pass through.
 Different values produce `x`.
+
+The `MAJ` gate votes across three inputs.
+Two high inputs produce high.
+Two low inputs produce low.
+Otherwise, the output is `x`.
+The gate maps `z` to `x` before it counts votes.
+
+```text
+gate MAJ vote (a,b,c) -> y
+```
 
 The `TRIBUF` gate is a tri-state buffer.
 Its first input is the data signal.
@@ -1359,6 +1443,7 @@ Deterministic tests also cover delayed transitions, delay accumulation, zero-del
 Deterministic tests also cover rise and fall delay parsing, conflict rules, direction-specific transitions, and the asymmetric delay demo.
 Deterministic tests also cover clock-to-output delay parsing, invalid tco fields, delayed commits, edge capture, delayed reset, wide register commits, and the golden output.
 Deterministic tests also cover BUF and MUX truth values, bus behavior, delayed paths, and their golden outputs.
+Deterministic tests also cover MAJ truth values, bus behavior, delayed paths, and its golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1372,6 +1457,7 @@ QuickCheck properties also compare the counter report with the simulated wavefor
 QuickCheck properties also compare whole-bus input values with per-bit reference values.
 QuickCheck properties also compare every VCD vector value with the per-bit waveform.
 QuickCheck properties also cover BUF behavior and MUX selection across all four logic values.
+QuickCheck properties also cover MAJ voting across all four logic values.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -1386,6 +1472,7 @@ The four-state property shows that the gates keep their two-state behavior for k
 The tri-state buffer property shows that an enabled driver passes data and a disabled driver floats.
 The BUF property shows that direct transfer preserves known values and maps floating input to unknown.
 The MUX property shows that an unknown selector passes equal branches and rejects different branches.
+The MAJ property shows that two known votes determine the output before unresolved inputs matter.
 The bus XOR property compares a bus gate with per-bit evaluation.
 The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
@@ -1399,7 +1486,8 @@ The asymmetric-delay property compares each output sample with the directional r
 ## Test status
 
 The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
-This workspace could not run Cabal because the executable is unavailable.
+This release adds deterministic and QuickCheck coverage for the MAJ gate.
+Local verification could not run because Cabal is unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
 Golden tests compare each fixture VCD with its golden file.
 The golden report test compares the counter report table with its golden file.
@@ -1412,6 +1500,7 @@ CI runs the asymmetric delay demo and compares it with its golden file.
 CI runs the clock-to-output delay demo and compares it with its golden file.
 CI runs the buffer demo and compares it with its golden file.
 CI runs the MUX demo and compares it with its golden file.
+CI runs the MAJ demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1421,6 +1510,8 @@ The simulator uses four logic values: low, high, unknown, and floating.
 A floating value reads as unknown inside a gate.
 The BUF gate preserves low, high, and unknown values.
 The MUX gate returns `x` when an unknown selector chooses different branches.
+The MAJ gate returns `x` when no known value reaches two votes.
+The MAJ gate treats `z` as `x` before voting.
 Several gates can drive one wire.
 The simulator resolves the driver values into one wire value.
 Resolution treats z as neutral and known values as dominant.
@@ -1474,6 +1565,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.18.0.0 completed the MAJ gate and its waveform evidence.
 Release 0.17.0.0 completed the MUX gate and its waveform evidence.
 Release 0.16.0.0 completed the BUF gate and its waveform evidence.
 Release 0.15.0.0 completed the clock-to-output delay for flip-flops.
@@ -1493,7 +1585,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Expand the gate library with additional circuit primitives.
+1. Add a documented sequential primitive with explicit enable behavior.
 
 ## License
 

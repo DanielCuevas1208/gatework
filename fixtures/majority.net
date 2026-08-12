@@ -1,0 +1,23 @@
+# A three-input majority voter with an unknown-state transition.
+input a
+input b
+input c
+output y
+output delayed
+wire y
+wire delayed
+gate MAJ vote (a,b,c) -> y
+gate MAJ slow (a,b,c) -> delayed delay=2
+assert y = 0 at 0
+assert delayed = 0 at 0
+assert y = 1 at 6
+assert delayed = 0 at 6
+assert y = 1 at 8
+assert delayed = 1 at 8
+assert y = x at 12
+assert delayed = 1 at 12
+assert y = x at 14
+assert delayed = x at 14
+assert y = 0 at 18
+assert delayed = x at 18
+assert delayed = 0 at 20
