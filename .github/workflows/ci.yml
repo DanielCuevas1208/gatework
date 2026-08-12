@@ -116,6 +116,10 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/mux.net --duration 10 --output /tmp/mux.vcd --set d0=0,d1=1,sel=0 --at 2 sel=1 --at 4 sel=x --at 6 d0=1,d1=1 --at 8 sel=z
       - name: Compare the MUX demo with the golden file
         run: diff fixtures/mux.golden.vcd /tmp/mux.vcd
+      - name: Run the MAJ demo
+        run: cabal run gatework -- --netlist fixtures/majority.net --duration 20 --output /tmp/majority.vcd --set a=0,b=0,c=1 --at 2 c=0 --at 4 a=1 --at 6 b=1 --at 10 c=x --at 12 a=0 --at 16 b=z --at 18 c=0
+      - name: Compare the MAJ demo with the golden file
+        run: diff fixtures/majority.golden.vcd /tmp/majority.vcd
       - name: Confirm a missing library file stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/missing.net --duration 0 --output /tmp/none.vcd 2>/tmp/none.log; then

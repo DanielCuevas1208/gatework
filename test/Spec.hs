@@ -166,6 +166,10 @@ main = do
     , testMuxFixture
     , testMuxBus
     , testGoldenMuxVCD
+    , testMajTruth
+    , testMajFixture
+    , testMajBus
+    , testGoldenMajVCD
     , testParserRejectsUnknownGate
     , testParserRejectsWrongArity
     , testParserRejectsEmptyInputs
@@ -353,6 +357,7 @@ main = do
     , ("TRIBUF follows its truth table", quickCheckResult propTribufTruth)
     , ("BUF follows its four-state truth table", quickCheckResult propBufferTruth)
     , ("MUX follows its four-state selection table", quickCheckResult propMuxTruth)
+    , ("MAJ follows its four-state voting table", quickCheckResult propMajTruth)
     , ("an enabled buffer passes known data", quickCheckResult propTribufEnable)
     , ("tri-state fixture stays consistent", quickCheckResult (propTribufFixtureSound tristate))
     , ("unknown fixture starts unclocked", quickCheckResult (propUnknownFixtureSampling unknown))
@@ -1272,6 +1277,96 @@ testGoldenMuxVCD = do
           10
         pure (renderVCD simulation)
   check "mux VCD matches golden file" (actual == Right golden)
+
+testMajTruth :: IO Bool
+testMajTruth =
+  check "MAJ returns the known majority and maps floating input to unknown" $
+    and
+      [ evalGate Maj [Low, Low, High] == Low
+      , evalGate Maj [Low, High, High] == High
+      , evalGate Maj [High, Low, High] == High
+      , evalGate Maj [High, High, Undefined] == High
+      , evalGate Maj [Low, Low, TriState] == Low
+      , evalGate Maj [Low, High, Undefined] == Undefined
+      , evalGate Maj [TriState, TriState, TriState] == Undefined
+      , evalGate Maj [Low, High] == Undefined
+      ]
+
+testMajFixture :: IO Bool
+testMajFixture = do
+  source <- readFile "fixtures/majority.net"
+  case parseNetlist source of
+    Left _ -> check "majority fixture simulates voting and delay" False
+    Right netlist -> check "majority fixture simulates voting and delay" $ case
+      simulateWithScheduledInputs netlist
+        [("a", Low), ("b", Low), ("c", High)]
+        [ (2, "c", Low)
+        , (4, "a", High)
+        , (6, "b", High)
+        , (10, "c", Undefined)
+        , (12, "a", Low)
+        , (16, "b", TriState)
+        , (18, "c", Low)
+        ]
+        20 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 13
+            && valueAt simulation "y" 0 == Low
+            && valueAt simulation "y" 6 == High
+            && valueAt simulation "y" 8 == High
+            && valueAt simulation "y" 12 == Undefined
+            && valueAt simulation "y" 14 == Undefined
+            && valueAt simulation "y" 18 == Low
+            && valueAt simulation "delayed" 6 == Low
+            && valueAt simulation "delayed" 8 == High
+            && valueAt simulation "delayed" 10 == High
+            && valueAt simulation "delayed" 12 == High
+            && valueAt simulation "delayed" 14 == Undefined
+            && valueAt simulation "delayed" 18 == Undefined
+            && valueAt simulation "delayed" 20 == Low
+        Left _ -> False
+
+testMajBus :: IO Bool
+testMajBus = case parseNetlist (unlines
+  [ "input a[4]"
+  , "input b[4]"
+  , "input c[4]"
+  , "output y[4]"
+  , "wire y[4]"
+  , "gate MAJ vote (a,b,c) -> y"
+  ]) of
+  Left _ -> check "MAJ applies voting bitwise across a bus" False
+  Right netlist -> check "MAJ applies voting bitwise across a bus" $ case
+    simulateWithInputs netlist
+      (busInputs "a" 9 4 ++ busInputs "b" 6 4 ++ busInputs "c" 3 4)
+      0 of
+      Right simulation ->
+        valueAt simulation "y[0]" 0 == High
+          && valueAt simulation "y[1]" 0 == High
+          && valueAt simulation "y[2]" 0 == Low
+          && valueAt simulation "y[3]" 0 == Low
+      Left _ -> False
+
+testGoldenMajVCD :: IO Bool
+testGoldenMajVCD = do
+  source <- readFile "fixtures/majority.net"
+  golden <- readFile "fixtures/majority.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithScheduledInputs netlist
+          [("a", Low), ("b", Low), ("c", High)]
+          [ (2, "c", Low)
+          , (4, "a", High)
+          , (6, "b", High)
+          , (10, "c", Undefined)
+          , (12, "a", Low)
+          , (16, "b", TriState)
+          , (18, "c", Low)
+          ]
+          20
+        pure (renderVCD simulation)
+  check "majority VCD matches golden file" (actual == Right golden)
 
 testGatesFixture :: IO Bool
 testGatesFixture = do
@@ -2727,6 +2822,20 @@ propMuxTruth (FourState lowData) (FourState highData) (FourState select) =
       let normalizedLow = normalize lowData
           normalizedHigh = normalize highData
       in if normalizedLow == normalizedHigh then normalizedLow else Undefined
+    normalize TriState = Undefined
+    normalize value = value
+
+propMajTruth :: FourState -> FourState -> FourState -> Bool
+propMajTruth (FourState first) (FourState second) (FourState third) =
+  evalGate Maj [first, second, third] == expected
+  where
+    normalized = map normalize [first, second, third]
+    highCount = length (filter (== High) normalized)
+    lowCount = length (filter (== Low) normalized)
+    expected
+      | highCount >= 2 = High
+      | lowCount >= 2 = Low
+      | otherwise = Undefined
     normalize TriState = Undefined
     normalize value = value
 
