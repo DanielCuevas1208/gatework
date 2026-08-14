@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.18.0.0
+version:            0.19.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
@@ -22,7 +22,9 @@ description:
   A three-input MAJ gate returns a known majority and maps an unresolved vote to unknown.
   The scheduler delays each gate transition by the declared amount.
   A flip-flop can declare a clock-to-output delay with the tco=N field.
-  The scheduler commits each flip-flop output after that delay.
+  A flip-flop can declare a clock enable with the en=signal field.
+  The scheduler samples flip-flop data only when enable is high.
+  The scheduler commits each flip-flop output after its declared delay.
   GTKWave and other waveform viewers can open the output.
 homepage:           https://github.com/DanielCuevas1208/gatework
 bug-reports:        https://github.com/DanielCuevas1208/gatework/issues

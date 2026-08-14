@@ -45,6 +45,7 @@ data DFlipFlop = DFlipFlop
   , dffOutput :: [String]
   , dffInitial :: [Logic]
   , dffReset :: Maybe String
+  , dffEnable :: Maybe String
   , dffClockToOutput :: Int
   }
   deriving (Eq, Show)
@@ -116,7 +117,7 @@ data RawDeclaration
   | RawWire String Int
   | RawClock Clock
   | RawGate GateType String [Ref] Ref Int Int
-  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref) (Maybe String)
+  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref) (Maybe Ref) (Maybe String)
   | RawAssert Ref Logic Time
   | RawInstance String String [Ref] [Ref]
   deriving (Eq, Show)
@@ -318,7 +319,7 @@ parseLine (lineNumber, line) = case words line of
       Left (lineError lineNumber ("gate " ++ name ++ " expects " ++ show (gateArity gate) ++ " inputs"))
     (riseDelay, fallDelay) <- parseGateFields lineNumber fields
     pure (RawGate gate gateName' inputRefs outputRef riseDelay fallDelay)
-  ("dff" : name : fields) -> do
+  (keyword : name : fields) | keyword `elem` ["dff", "dffe"] -> do
     dffName' <- parseIdentifier lineNumber name
     parsedFields <- mapM (parseField lineNumber) fields
     clockRef <- requiredField lineNumber "clock" parsedFields
@@ -334,10 +335,21 @@ parseLine (lineNumber, line) = case words line of
         tcoText = lookup "tco" parsedFields
     unless (length [field | field <- parsedFields, fst field == "tco"] <= 1) $
       Left (lineError lineNumber "dff tco field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "en"] <= 1) $
+      Left (lineError lineNumber "dff en field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "rst"] <= 1) $
+      Left (lineError lineNumber "dff rst field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "init"] <= 1) $
+      Left (lineError lineNumber "dff init field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "width"] <= 1) $
+      Left (lineError lineNumber "dff width field cannot repeat")
     reset <- case lookup "rst" parsedFields of
       Nothing -> Right Nothing
       Just value -> Just <$> parseRef lineNumber value
-    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset tcoText)
+    enable <- case lookup "en" parsedFields of
+      Nothing -> Right Nothing
+      Just value -> Just <$> parseRef lineNumber value
+    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset enable tcoText)
   ["assert", signal, "=", value, "at", timeText] -> do
     signalRef <- parseRef lineNumber signal
     logic <- maybe
@@ -427,7 +439,7 @@ parseRefList lineNumber key value = do
 parseField :: Int -> String -> Either String (String, String)
 parseField lineNumber field = case break (== '=') field of
   (key, '=' : value)
-    | key `elem` ["clock", "d", "q", "init", "rst", "width", "tco"] && not (null value) -> Right (key, value)
+    | key `elem` ["clock", "d", "q", "init", "rst", "width", "tco", "en"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
 
 data DelayField = DelayField | RiseField | FallField
@@ -564,8 +576,8 @@ resolveDeclaration signatureModules widths declaration = case declaration of
   RawClock clock -> Right [ClockDeclaration clock]
   RawGate gateKind name inputRefs outputRef riseDelay fallDelay ->
     resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay
-  RawDff name clockRef dataRefs outRefs initText widthText resetRef tcoText ->
-    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef tcoText
+  RawDff name clockRef dataRefs outRefs initText widthText resetRef enableRef tcoText ->
+    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef tcoText
   RawAssert signalRef value time -> resolveAssertion widths signalRef value time
   RawInstance name targetModule inputRefs outputRefs ->
     resolveInstance signatureModules widths name targetModule inputRefs outputRefs
@@ -591,9 +603,9 @@ resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay = do
     | index <- [0 .. width - 1]
     ]
 
-resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref -> Maybe String
+resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref -> Maybe Ref -> Maybe String
   -> Either String [Declaration]
-resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef tcoText = do
+resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef tcoText = do
   clockName <- case resolveRef widths clockRef of
     Left message -> Left message
     Right [signal] -> Right signal
@@ -619,6 +631,12 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef tco
       Left message -> Left message
       Right [signal] -> Right (Just signal)
       Right _ -> Left ("dff " ++ name ++ " reset must reference a single signal")
+  enableSignal <- case enableRef of
+    Nothing -> Right Nothing
+    Just ref -> case resolveRef widths ref of
+      Left message -> Left message
+      Right [signal] -> Right (Just signal)
+      Right _ -> Left ("dff " ++ name ++ " enable must reference a single signal")
   pure
     [ FlipFlopDeclaration
         (DFlipFlop
@@ -628,6 +646,7 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef tco
           [outputBits !! index]
           [initList !! index]
           resetSignal
+          enableSignal
           clockToOutput)
     | index <- [0 .. width - 1]
     ]
@@ -768,6 +787,7 @@ checkFlipFlop declared clocks flipFlop = do
     Left ("dff clock is not declared: " ++ dffClock flipFlop)
   mapM_ (checkKnown declared "dff data input") (dffData flipFlop)
   mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
+  mapM_ (checkKnown declared "dff enable") (maybe [] pure (dffEnable flipFlop))
 
 checkKnown :: [String] -> String -> String -> Either String ()
 checkKnown declared label name =
@@ -849,6 +869,7 @@ checkModuleFlipFlop moduleDef declared clockSignals flipFlop = do
     Left ("dff clock must be a module clock or input port: " ++ dffClock flipFlop)
   mapM_ (checkKnown declared "dff data input") (dffData flipFlop)
   mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
+  mapM_ (checkKnown declared "dff enable") (maybe [] pure (dffEnable flipFlop))
 
 flattenParsed :: ParsedNetlist -> Either String Netlist
 flattenParsed parsed = do
@@ -918,6 +939,7 @@ expandDeclaration parsed rename instancePrefix stack declaration = case declarat
       , dffData = map rename (dffData flipFlop)
       , dffOutput = map rename (dffOutput flipFlop)
       , dffReset = fmap rename (dffReset flipFlop)
+      , dffEnable = fmap rename (dffEnable flipFlop)
       }
     ]
   AssertionDeclaration assertion -> pure

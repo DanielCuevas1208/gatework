@@ -61,6 +61,9 @@ You can do these tasks:
 - Use a non-inverting `BUF` gate for known and unknown signal paths.
 - Select data with a three-input `MUX` gate.
 - Vote across three inputs with a four-state `MAJ` gate.
+- Control flip-flop sampling with an explicit enable pin.
+- Hold flip-flop state across clock cycles with a low enable.
+- Resolve unknown enable values against stored flip-flop state.
 
 ## Architecture
 
@@ -98,6 +101,9 @@ A rising output uses the rise delay.
 A falling output uses the fall delay.
 A gate delay accumulates through a chain of gates.
 A rising clock edge samples attached flip-flops together.
+A flip-flop samples data on rising clock edges when enable is high.
+A flip-flop holds its value when enable is low.
+An unknown enable resolves to the stored value when data matches the output.
 A flip-flop commits its output after its clock-to-output delay.
 A flip-flop captures the data value at the clock edge.
 An asserted reset forces flip-flop outputs to their initial values.
@@ -424,6 +430,48 @@ The delayed instance commits two time units later.
 | 16 | 0 | z | x | x | x |
 | 18 | 0 | z | 0 | 0 | x |
 | 20 | 0 | z | 0 | 0 | 0 |
+
+## Enabled register demo
+
+Run the clock-enabled register demo.
+
+```powershell
+cabal run gatework -- --netlist fixtures/enable.net --duration 20 --output enable.vcd --set d=1,en=0,rst=0 --at 4 en=1 --at 8 d=0,en=0 --at 12 en=x --at 16 rst=1 --at 18 rst=0,en=1,d=1
+```
+
+The command writes this output:
+
+```text
+Wrote enable.vcd
+Signals: 6
+Duration: 20 time units
+Assertions: 14 passed
+```
+
+The `en=` field controls sampling on rising clock edges.
+A low enable keeps the current flip-flop state.
+A high enable samples the data input.
+An unknown enable preserves equal state and produces unknown for differing data.
+An asserted reset overrides enable immediately.
+The delayed instance commits one time unit later.
+
+| Time | d | en | rst | clk | q | slow |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| 2 | 1 | 0 | 0 | 1 | 0 | 0 |
+| 4 | 1 | 1 | 0 | 0 | 0 | 0 |
+| 6 | 1 | 1 | 0 | 1 | 1 | 0 |
+| 7 | 1 | 1 | 0 | 1 | 1 | 1 |
+| 8 | 0 | 0 | 0 | 0 | 1 | 1 |
+| 10 | 0 | 0 | 0 | 1 | 1 | 1 |
+| 12 | 0 | x | 0 | 0 | 1 | 1 |
+| 14 | 0 | x | 0 | 1 | x | 1 |
+| 15 | 0 | x | 0 | 1 | x | x |
+| 16 | 0 | x | 1 | 0 | 0 | x |
+| 17 | 0 | x | 1 | 0 | 0 | 0 |
+| 18 | 1 | 1 | 0 | 1 | 1 | 0 |
+| 19 | 1 | 1 | 0 | 1 | 1 | 1 |
+| 20 | 1 | 1 | 0 | 0 | 1 | 1 |
 
 ## Hierarchical adder demo
 
@@ -1116,6 +1164,7 @@ A gate output must have a `wire` or `output` declaration.
 A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
 It accepts an optional `tco=` clock-to-output delay field.
+It accepts an optional `en=` clock enable field.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
 
@@ -1259,6 +1308,27 @@ All bits commit together at the same time.
 
 ```text
 dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 tco=3
+```
+
+### Clock enable
+
+A flip-flop can gate its sampling with a clock enable signal.
+Use the `en=<signal>` field.
+
+```text
+dff reg clock=clk d=d q=q en=en init=0
+```
+
+When enable is high, rising clock edges sample the data input.
+When enable is low, rising clock edges hold the previous output.
+An unknown enable resolves to the current state when data equals the output.
+An unknown enable produces unknown when data differs from the output.
+An asserted reset overrides enable immediately.
+
+A wide flip-flop shares one enable signal across all bits.
+
+```text
+dff pair clock=clk d=d0,d1 q=q0,q1 en=en init=0,0
 ```
 
 Use `assert` to check a signal value at a fixed time.
@@ -1444,6 +1514,7 @@ Deterministic tests also cover rise and fall delay parsing, conflict rules, dire
 Deterministic tests also cover clock-to-output delay parsing, invalid tco fields, delayed commits, edge capture, delayed reset, wide register commits, and the golden output.
 Deterministic tests also cover BUF and MUX truth values, bus behavior, delayed paths, and their golden outputs.
 Deterministic tests also cover MAJ truth values, bus behavior, delayed paths, and its golden output.
+Deterministic tests also cover clock enable parsing, hold and sampling behavior, four-state resolution, reset overrides, and the golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1458,6 +1529,7 @@ QuickCheck properties also compare whole-bus input values with per-bit reference
 QuickCheck properties also compare every VCD vector value with the per-bit waveform.
 QuickCheck properties also cover BUF behavior and MUX selection across all four logic values.
 QuickCheck properties also cover MAJ voting across all four logic values.
+QuickCheck properties also cover clock-enabled flip-flops and four-state enable resolution.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -1473,6 +1545,7 @@ The tri-state buffer property shows that an enabled driver passes data and a dis
 The BUF property shows that direct transfer preserves known values and maps floating input to unknown.
 The MUX property shows that an unknown selector passes equal branches and rejects different branches.
 The MAJ property shows that two known votes determine the output before unresolved inputs matter.
+The enable property compares clock-enabled flip-flop waveforms with a pure reference model across random data and enable sequences.
 The bus XOR property compares a bus gate with per-bit evaluation.
 The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
@@ -1486,7 +1559,7 @@ The asymmetric-delay property compares each output sample with the directional r
 ## Test status
 
 The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
-This release adds deterministic and QuickCheck coverage for the MAJ gate.
+This release adds deterministic and QuickCheck coverage for clock-enabled flip-flops.
 Local verification could not run because Cabal is unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
 Golden tests compare each fixture VCD with its golden file.
@@ -1501,6 +1574,7 @@ CI runs the clock-to-output delay demo and compares it with its golden file.
 CI runs the buffer demo and compares it with its golden file.
 CI runs the MUX demo and compares it with its golden file.
 CI runs the MAJ demo and compares it with its golden file.
+CI runs the enable demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1528,6 +1602,11 @@ The `delay=` field cannot combine with `rise=` or `fall=`.
 The initial state settles at time zero without delay.
 Events at time zero ignore the gate delay.
 A flip-flop captures data at the clock edge.
+A flip-flop enable must reference a single-bit signal.
+A flip-flop with enable samples only on rising clock edges.
+A low enable holds the current stored value.
+An unknown enable produces unknown when data differs from the stored value.
+The `en=` field cannot repeat on one flip-flop.
 The captured value commits after the clock-to-output delay.
 The clock-to-output delay applies to an asserted reset too.
 The initial flip-flop value settles at time zero without delay.
@@ -1565,6 +1644,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.19.0.0 completed the clock-enabled sequential primitive and its waveform evidence.
 Release 0.18.0.0 completed the MAJ gate and its waveform evidence.
 Release 0.17.0.0 completed the MUX gate and its waveform evidence.
 Release 0.16.0.0 completed the BUF gate and its waveform evidence.
@@ -1585,7 +1665,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add a documented sequential primitive with explicit enable behavior.
+1. Add level-sensitive latch primitives with transparent gating behavior.
 
 ## License
 

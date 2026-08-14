@@ -1,0 +1,80 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.19.0.0
+$end
+$comment
+  assert q = 0 at 0
+  assert slow = 0 at 0
+  assert q = 0 at 2
+  assert q = 1 at 6
+  assert slow = 0 at 6
+  assert slow = 1 at 7
+  assert q = 1 at 10
+  assert slow = 1 at 10
+  assert q = x at 14
+  assert slow = 1 at 14
+  assert slow = x at 15
+  assert q = 0 at 16
+  assert slow = 0 at 17
+  assert q = 1 at 18
+  assert slow = 1 at 19
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! d $end
+$var wire 1 " en $end
+$var wire 1 # rst $end
+$var wire 1 $ q $end
+$var wire 1 % slow $end
+$var wire 1 & clk $end
+$upscope $end
+$enddefinitions $end
+#0
+1!
+0"
+0#
+0$
+0%
+0&
+#2
+1&
+#4
+1"
+0&
+#6
+1$
+1&
+#7
+1%
+#8
+0!
+0"
+0&
+#10
+1&
+#12
+x"
+0&
+#14
+x$
+1&
+#15
+x%
+#16
+1#
+0$
+0&
+#17
+0%
+#18
+1!
+1"
+0#
+1$
+1&
+#19
+1%
+#20
+0&

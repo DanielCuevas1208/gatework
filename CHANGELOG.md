@@ -5,6 +5,26 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.19.0.0] - 2026-08-14
+
+### Added
+
+- Add the `en=<signal>` clock enable field to flip-flop declarations.
+- Sample flip-flop data on a rising clock edge only when enable is high.
+- Hold previous flip-flop state when enable is low.
+- Resolve an unknown or floating enable to the stored state when data matches output.
+- Emit unknown when an unknown enable encounters differing data and output values.
+- Support clock enable with asynchronous reset and clock-to-output delay.
+- Support clock enable across multi-bit registers and hierarchical modules.
+- Reject repeated, invalid, or multi-bit enable parameters.
+- Add an enabled flip-flop waveform fixture and a golden VCD file.
+- Add deterministic tests and QuickCheck properties for clock enable behavior.
+
+### Changed
+
+- Bump the package version to 0.19.0.0.
+- Update golden VCD fixtures to the new version string.
+
 ## [0.18.0.0] - 2026-08-12
 
 ### Added

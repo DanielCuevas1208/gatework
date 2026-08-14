@@ -386,11 +386,21 @@ edgeSamples netlist signal state =
 dffSampleValue :: DFlipFlop -> Int -> WireState -> Logic
 dffSampleValue flipFlop index state
   | resetAsserted = dffInitial flipFlop !! index
-  | otherwise = Map.findWithDefault Low (dffData flipFlop !! index) state
+  | otherwise = case dffEnable flipFlop of
+      Nothing -> dataVal
+      Just enableSignal ->
+        let enVal = Map.findWithDefault Low enableSignal state
+        in case enVal of
+          High -> dataVal
+          Low -> currentQ
+          Undefined -> if dataVal == currentQ then currentQ else Undefined
+          TriState -> if dataVal == currentQ then currentQ else Undefined
   where
     resetAsserted = case dffReset flipFlop of
       Just reset -> Map.findWithDefault Low reset state == High
       Nothing -> False
+    dataVal = Map.findWithDefault Low (dffData flipFlop !! index) state
+    currentQ = Map.findWithDefault Low (dffOutput flipFlop !! index) state
 
 dffWidth :: DFlipFlop -> Int
 dffWidth flipFlop = length (dffData flipFlop)

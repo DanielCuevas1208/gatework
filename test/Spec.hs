@@ -12,6 +12,7 @@ import Gatework.Netlist
   , Gate (..)
   , Netlist (..)
   , dffClockToOutput
+  , dffEnable
   , netlistAssertions
   , netlistSignals
   , parseNetlist
@@ -319,6 +320,16 @@ main = do
     , testClockToOutputZeroKeepsImmediate
     , testClockToOutputRegisterWidth
     , testGoldenClockToOutputVCD
+    , testParserAcceptsEnable
+    , testParserRejectsInvalidEnable
+    , testEnableHoldsAndSamples
+    , testEnableFourStateResolution
+    , testEnableWithReset
+    , testEnableWithClockToOutputDelay
+    , testEnableBusRegister
+    , testEnableInModule
+    , testEnableFixture
+    , testGoldenEnableVCD
     ]
   properties <- forM
     [ ("AND is commutative", quickCheckResult propAndCommutative)
@@ -359,6 +370,7 @@ main = do
     , ("MUX follows its four-state selection table", quickCheckResult propMuxTruth)
     , ("MAJ follows its four-state voting table", quickCheckResult propMajTruth)
     , ("an enabled buffer passes known data", quickCheckResult propTribufEnable)
+    , ("four-state enable matches truth model", quickCheckResult propEnableTruth)
     , ("tri-state fixture stays consistent", quickCheckResult (propTribufFixtureSound tristate))
     , ("unknown fixture starts unclocked", quickCheckResult (propUnknownFixtureSampling unknown))
     , ("bus XOR matches the bitwise reference", quickCheckResult propBusXorBitwise)
@@ -372,6 +384,7 @@ main = do
     , ("whole-bus values match per-bit values", quickCheckResult propWholeBusMatchesBitwise)
     , ("VCD vectors match the per-bit waveform", quickCheckResult propVCDVectorMatchesBits)
     , ("clock-to-output delays match a reference model", quickCheckResult propClockToOutputMatchesReference)
+    , ("enabled flip-flops match a reference model", quickCheckResult propEnableMatchesReference)
     ]
     $ \(label, action) -> do
       result <- action
@@ -2685,6 +2698,245 @@ testGoldenClockToOutputVCD = do
         pure (renderVCD simulation)
   check "tco VCD matches golden file" (actual == Right golden)
 
+testParserAcceptsEnable :: IO Bool
+testParserAcceptsEnable = case
+  parseNetlist (unlines
+    [ "input d"
+    , "input en"
+    , "output q"
+    , "clock clk period=4"
+    , "dff state clock=clk d=d q=q en=en init=0"
+    ]) of
+    Left _ -> check "parser accepts a clock enable on dff" False
+    Right netlist -> check "parser accepts a clock enable on dff" $
+      case netlistFlipFlops netlist of
+        [flipFlop] -> dffEnable flipFlop == Just "en"
+        _ -> False
+
+testParserRejectsInvalidEnable :: IO Bool
+testParserRejectsInvalidEnable =
+  check "parser rejects invalid enable fields" $
+    isLeft (parseNetlist (unlines
+      [ "input d"
+      , "input en1"
+      , "input en2"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q en=en1 en=en2 init=0"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "input d"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q en=missing init=0"
+      ]))
+      && isLeft (parseNetlist (unlines
+      [ "input d"
+      , "input en[2]"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q en=en init=0"
+      ]))
+
+testEnableHoldsAndSamples :: IO Bool
+testEnableHoldsAndSamples =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input en"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q en=en init=0"
+        ])
+  in case netlist of
+    Left _ -> check "an enabled flip-flop samples when enable is high and holds when low" False
+    Right parsed -> check "an enabled flip-flop samples when enable is high and holds when low" $ case
+      simulateWithScheduledInputs parsed [("d", High), ("en", Low)]
+        [ (4, "en", High)
+        , (8, "d", Low)
+        , (8, "en", Low)
+        , (12, "en", High)
+        ] 16 of
+        Right simulation ->
+          valueAt simulation "q" 0 == Low
+            && valueAt simulation "q" 2 == Low
+            && valueAt simulation "q" 6 == High
+            && valueAt simulation "q" 10 == High
+            && valueAt simulation "q" 14 == Low
+        Left _ -> False
+
+testEnableFourStateResolution :: IO Bool
+testEnableFourStateResolution =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input en"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q en=en init=0"
+        ])
+  in case netlist of
+    Left _ -> check "an unknown enable resolves matching state and emits unknown for differences" False
+    Right parsed -> check "an unknown enable resolves matching state and emits unknown for differences" $ case
+      simulateWithScheduledInputs parsed [("d", Low), ("en", Undefined)]
+        [ (4, "d", High)
+        , (8, "en", TriState)
+        , (12, "d", Undefined)
+        ] 16 of
+        Right simulation ->
+          valueAt simulation "q" 2 == Low
+            && valueAt simulation "q" 6 == Undefined
+            && valueAt simulation "q" 10 == Undefined
+            && valueAt simulation "q" 14 == Undefined
+        Left _ -> False
+
+testEnableWithReset :: IO Bool
+testEnableWithReset =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input en"
+        , "input rst"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q en=en rst=rst init=0"
+        ])
+  in case netlist of
+    Left _ -> check "an asserted reset overrides enable" False
+    Right parsed -> check "an asserted reset overrides enable" $ case
+      simulateWithScheduledInputs parsed [("d", High), ("en", High), ("rst", Low)]
+        [ (6, "rst", High)
+        , (10, "rst", Low)
+        , (10, "en", Low)
+        ] 14 of
+        Right simulation ->
+          valueAt simulation "q" 2 == High
+            && valueAt simulation "q" 6 == Low
+            && valueAt simulation "q" 10 == Low
+            && valueAt simulation "q" 14 == Low
+        Left _ -> False
+
+testEnableWithClockToOutputDelay :: IO Bool
+testEnableWithClockToOutputDelay =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input en"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q en=en init=0 tco=2"
+        ])
+  in case netlist of
+    Left _ -> check "an enabled flip-flop output commits after tco delay" False
+    Right parsed -> check "an enabled flip-flop output commits after tco delay" $ case
+      simulateWithScheduledInputs parsed [("d", High), ("en", High)]
+        [ (8, "d", Low)
+        , (8, "en", Low)
+        ] 12 of
+        Right simulation ->
+          signalChanges simulation "q" == [(0, Low), (4, High)]
+        Left _ -> False
+
+testEnableBusRegister :: IO Bool
+testEnableBusRegister =
+  let netlist = parseNetlist (unlines
+        [ "input a[4]"
+        , "input en"
+        , "output q[4]"
+        , "clock clk period=4"
+        , "dff reg clock=clk d=a q=q en=en init=0,0,0,0"
+        ])
+  in case netlist of
+    Left _ -> check "an enabled bus register samples all bits when enabled" False
+    Right parsed -> check "an enabled bus register samples all bits when enabled" $ case
+      simulateWithScheduledInputs parsed (busInputs "a" 10 4 ++ [("en", Low)])
+        [ (4, "en", High)
+        , (8, "en", Low)
+        ] 12 of
+        Right simulation ->
+          busValueAt simulation "q" 4 2 == 0
+            && busValueAt simulation "q" 4 6 == 10
+            && busValueAt simulation "q" 4 10 == 10
+        Left _ -> False
+
+testEnableInModule :: IO Bool
+testEnableInModule =
+  let source = unlines
+        [ "module enreg (d,en) -> (q)"
+        , "  clock mclk period=4"
+        , "  dff f clock=mclk d=d q=q en=en init=0"
+        , "end"
+        , "input d"
+        , "input en"
+        , "output q"
+        , "instance enreg u1 (d,en) -> (q)"
+        ]
+  in case parseNetlist source of
+    Left _ -> check "an enabled flip-flop in a module flattens and samples" False
+    Right netlist ->
+      check "an enabled flip-flop in a module flattens and samples" $ case
+        simulateWithScheduledInputs netlist [("d", High), ("en", Low)]
+          [(4, "en", High)] 8 of
+          Right simulation ->
+            valueAt simulation "q" 2 == Low
+              && valueAt simulation "q" 6 == High
+          Left _ -> False
+
+testEnableFixture :: IO Bool
+testEnableFixture = do
+  source <- readFile "fixtures/enable.net"
+  case parseNetlist source of
+    Left _ -> check "enable fixture simulates hold, sample, unknown enable, reset, and tco" False
+    Right netlist -> check "enable fixture simulates hold, sample, unknown enable, reset, and tco" $ case
+      simulateWithScheduledInputs netlist
+        [("d", High), ("en", Low), ("rst", Low)]
+        [ (4, "en", High)
+        , (8, "d", Low)
+        , (8, "en", Low)
+        , (12, "en", Undefined)
+        , (16, "rst", High)
+        , (18, "rst", Low)
+        , (18, "en", High)
+        , (18, "d", High)
+        ]
+        20 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 14
+            && valueAt simulation "q" 0 == Low
+            && valueAt simulation "q" 2 == Low
+            && valueAt simulation "q" 6 == High
+            && valueAt simulation "q" 10 == High
+            && valueAt simulation "q" 14 == Undefined
+            && valueAt simulation "q" 16 == Low
+            && valueAt simulation "q" 18 == High
+            && valueAt simulation "slow" 0 == Low
+            && valueAt simulation "slow" 6 == Low
+            && valueAt simulation "slow" 7 == High
+            && valueAt simulation "slow" 10 == High
+            && valueAt simulation "slow" 14 == High
+            && valueAt simulation "slow" 15 == Undefined
+            && valueAt simulation "slow" 17 == Low
+            && valueAt simulation "slow" 19 == High
+        Left _ -> False
+
+testGoldenEnableVCD :: IO Bool
+testGoldenEnableVCD = do
+  source <- readFile "fixtures/enable.net"
+  golden <- readFile "fixtures/enable.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithScheduledInputs netlist
+          [("d", High), ("en", Low), ("rst", Low)]
+          [ (4, "en", High)
+          , (8, "d", Low)
+          , (8, "en", Low)
+          , (12, "en", Undefined)
+          , (16, "rst", High)
+          , (18, "rst", Low)
+          , (18, "en", High)
+          , (18, "d", High)
+          ]
+          20
+        pure (renderVCD simulation)
+  check "enable VCD matches golden file" (actual == Right golden)
+
 data VcdVar = VcdVar
   { vcdVarName :: String
   , vcdVarId :: String
@@ -2838,6 +3090,20 @@ propMajTruth (FourState first) (FourState second) (FourState third) =
       | otherwise = Undefined
     normalize TriState = Undefined
     normalize value = value
+
+propEnableTruth :: FourState -> FourState -> FourState -> Bool
+propEnableTruth (FourState dataValue) (FourState enable) (FourState currentQ) =
+  expected == actual
+  where
+    actual = case enable of
+      High -> dataValue
+      Low -> currentQ
+      Undefined -> if dataValue == currentQ then currentQ else Undefined
+      TriState -> if dataValue == currentQ then currentQ else Undefined
+    expected = case enable of
+      High -> dataValue
+      Low -> currentQ
+      _ -> if dataValue == currentQ then currentQ else Undefined
 
 propTribufFixtureSound :: Netlist -> Property
 propTribufFixtureSound netlist =
@@ -3456,6 +3722,57 @@ propClockToOutputMatchesReference =
     edges halfPeriod sampleTime =
       takeWhile (\edge -> edge <= sampleTime)
         [(2 * k + 1) * halfPeriod | k <- [0 :: Int ..]]
+
+propEnableMatchesReference :: Property
+propEnableMatchesReference =
+  forAll (choose (0 :: Int, 5)) $ \count ->
+    forAll (vector count) $ \dataBools ->
+      forAll (vector count) $ \enBools ->
+        forAll (elements [Low, High]) $ \initialQ ->
+          let halfPeriod = 2 :: Int
+              times = [2 * k | k <- [1 :: Int .. count]]
+              dataValues = map boolToLogic dataBools
+              enValues = map boolToLogic enBools
+              changes =
+                [ (fromIntegral time, "d", dVal)
+                | (time, dVal) <- zip times dataValues
+                ]
+                ++
+                [ (fromIntegral time, "en", enVal)
+                | (time, enVal) <- zip times enValues
+                ]
+              duration = fromIntegral (4 * count + 4)
+              source = unlines
+                [ "input d"
+                , "input en"
+                , "output q"
+                , "clock clk period=" ++ show (2 * halfPeriod)
+                , "dff state clock=clk d=d q=q en=en init=" ++ [logicChar initialQ]
+                ]
+          in case parseNetlist source of
+               Left _ -> property False
+               Right netlist ->
+                 case simulateWithScheduledInputs netlist [("d", Low), ("en", Low)] changes duration of
+                   Left _ -> property False
+                   Right simulation ->
+                     property (all (matches simulation initialQ (zip times (zip dataValues enValues))) [0 .. duration])
+  where
+    matches simulation initialQ history time =
+      valueAt simulation "q" time == referenceModel initialQ history time
+    referenceModel initialQ history queryTime =
+      let clockEdges = [4 * k + 2 | k <- [0 .. (fromIntegral queryTime `div` 4)]]
+      in foldl' (step history) initialQ (filter (<= fromIntegral queryTime) clockEdges)
+    step history q edge =
+      let dVal = valueAtHistory "d" Low history edge
+          enVal = valueAtHistory "en" Low history edge
+      in case enVal of
+           High -> dVal
+           Low -> q
+           _ -> if dVal == q then q else Undefined
+    valueAtHistory name def history edge =
+      case [val | (t, (dVal, enVal)) <- history, t <= edge, let val = if name == "d" then dVal else enVal] of
+        [] -> def
+        vals -> last vals
 
 propEquivalentEntryPoints :: Netlist -> Property
 propEquivalentEntryPoints netlist =
