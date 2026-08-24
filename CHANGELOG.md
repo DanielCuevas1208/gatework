@@ -24,6 +24,7 @@ This project uses semantic versioning.
 
 - Bump the package version to 0.19.0.0.
 - Update golden VCD fixtures to the new version string.
+- Apply scheduled inputs before clock transitions at the same time.
 
 ## [0.18.0.0] - 2026-08-12
 

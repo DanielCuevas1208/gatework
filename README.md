@@ -101,6 +101,7 @@ A rising output uses the rise delay.
 A falling output uses the fall delay.
 A gate delay accumulates through a chain of gates.
 A rising clock edge samples attached flip-flops together.
+Scheduled input transitions at a clock edge settle before the edge.
 A flip-flop samples data on rising clock edges when enable is high.
 A flip-flop holds its value when enable is low.
 An unknown enable resolves to the stored value when data matches the output.
@@ -1165,6 +1166,7 @@ A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
 It accepts an optional `tco=` clock-to-output delay field.
 It accepts an optional `en=` clock enable field.
+The parser also accepts `dffe` as an alias for `dff`.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
 
@@ -1515,6 +1517,7 @@ Deterministic tests also cover clock-to-output delay parsing, invalid tco fields
 Deterministic tests also cover BUF and MUX truth values, bus behavior, delayed paths, and their golden outputs.
 Deterministic tests also cover MAJ truth values, bus behavior, delayed paths, and its golden output.
 Deterministic tests also cover clock enable parsing, hold and sampling behavior, four-state resolution, reset overrides, and the golden output.
+Deterministic tests also cover same-time input priority at clock edges.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1559,7 +1562,7 @@ The asymmetric-delay property compares each output sample with the directional r
 ## Test status
 
 The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
-This release adds deterministic and QuickCheck coverage for clock-enabled flip-flops.
+This release adds deterministic and QuickCheck coverage for clock enables and same-time event ordering.
 Local verification could not run because Cabal is unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
 Golden tests compare each fixture VCD with its golden file.
@@ -1619,8 +1622,9 @@ They do not react to circuit state.
 VCD output uses one module scope.
 A bus renders as one multi-bit vector.
 A scalar signal renders as one bit.
-An asynchronous reset that releases on a clock edge is a race.
-The event order decides the result.
+Scheduled input transitions at a clock edge apply before the edge.
+An asynchronous reset release at a clock edge follows the same ordering.
+The simulator does not model analog metastability.
 A wide flip-flop uses one shared reset signal.
 Assertions use the settled value at each time.
 An assertion time beyond the run duration is an error.
@@ -1644,7 +1648,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
-Release 0.19.0.0 completed the clock-enabled sequential primitive and its waveform evidence.
+Release 0.19.0.0 completed the clock-enabled sequential primitive, same-time event ordering, and waveform evidence.
 Release 0.18.0.0 completed the MAJ gate and its waveform evidence.
 Release 0.17.0.0 completed the MUX gate and its waveform evidence.
 Release 0.16.0.0 completed the BUF gate and its waveform evidence.

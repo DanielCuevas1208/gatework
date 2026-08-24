@@ -152,8 +152,9 @@ simulateWithScheduledInputs netlist inputOverrides scheduledInputs duration
           baseState = initialState netlist inputOverrides
           simState = SimState baseState (initialDrivers byOutput baseState)
           initialEvents = initialDrivenEvents byOutput baseState
-          scheduledQueue = foldl' addScheduledEvent (clockQueue netlist duration) scheduledInputs
-          queue = addInitialEvents scheduledQueue initialEvents
+          scheduledQueue = foldl' addScheduledEvent Map.empty scheduledInputs
+          queueWithClocks = clockQueue netlist duration scheduledQueue
+          queue = addInitialEvents queueWithClocks initialEvents
           initialChanges = initialWaveform netlist baseState
       result <- runQueue netlist byInput duration queue simState initialChanges
       let assertions = netlistAssertions netlist
@@ -242,11 +243,12 @@ addInitialEvents :: EventQueue -> [Pending] -> EventQueue
 addInitialEvents queue events = Map.insertWith (++) 0 events queue
 
 clockQueue :: Netlist -> Time -> EventQueue
-clockQueue netlist duration = foldl' addClock Map.empty (netlistClocks netlist)
+clockQueue netlist duration initialQueue =
+  foldl' addClock initialQueue (netlistClocks netlist)
   where
     addClock queue clock = foldl' (addTransition clock) queue (transitionTimes clock duration)
     addTransition clock queue time =
-      Map.insertWith (++) time [SignalEvent (clockSignal clock) (clockValue clock time)] queue
+      Map.insertWith (flip (++)) time [SignalEvent (clockSignal clock) (clockValue clock time)] queue
 
 transitionTimes :: Clock -> Time -> [Time]
 transitionTimes clock duration =

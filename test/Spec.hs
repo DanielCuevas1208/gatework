@@ -322,6 +322,7 @@ main = do
     , testGoldenClockToOutputVCD
     , testParserAcceptsEnable
     , testParserRejectsInvalidEnable
+    , testScheduledInputPrecedesClockEdge
     , testEnableHoldsAndSamples
     , testEnableFourStateResolution
     , testEnableWithReset
@@ -2705,7 +2706,7 @@ testParserAcceptsEnable = case
     , "input en"
     , "output q"
     , "clock clk period=4"
-    , "dff state clock=clk d=d q=q en=en init=0"
+    , "dffe state clock=clk d=d q=q en=en init=0"
     ]) of
     Left _ -> check "parser accepts a clock enable on dff" False
     Right netlist -> check "parser accepts a clock enable on dff" $
@@ -2737,6 +2738,23 @@ testParserRejectsInvalidEnable =
       , "clock clk period=4"
       , "dff state clock=clk d=d q=q en=en init=0"
       ]))
+
+testScheduledInputPrecedesClockEdge :: IO Bool
+testScheduledInputPrecedesClockEdge =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input en"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q en=en init=0"
+        ])
+  in case netlist of
+    Left _ -> check "scheduled inputs apply before a same-time clock edge" False
+    Right parsed -> check "scheduled inputs apply before a same-time clock edge" $ case
+      simulateWithScheduledInputs parsed [ ("d", Low), ("en", Low) ]
+        [ (2, "d", High), (2, "en", High) ] 2 of
+        Right simulation -> signalChanges simulation "q" == [(0, Low), (2, High)]
+        Left _ -> False
 
 testEnableHoldsAndSamples :: IO Bool
 testEnableHoldsAndSamples =
