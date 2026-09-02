@@ -5,6 +5,22 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.20.0.0] - 2026-09-02
+
+### Added
+
+- Add a level-sensitive `latch` declaration with `gate=`, `d=`, and `q=` fields.
+- Make a high latch gate transparent to data changes.
+- Make a low latch gate hold its stored output.
+- Resolve unknown and floating latch gates against the stored output.
+- Support latch reset, bus expansion, and module flattening.
+- Wake downstream latches when a gate or sequential output changes.
+- Add a latch waveform fixture, golden VCD, deterministic tests, and a QuickCheck property.
+
+### Changed
+
+- Bump the package version to 0.20.0.0.
+
 ## [0.19.0.0] - 2026-08-14
 
 ### Added

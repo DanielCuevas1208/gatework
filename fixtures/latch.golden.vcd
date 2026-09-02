@@ -1,0 +1,64 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.20.0.0
+$end
+$comment
+  assert q = 0 at 0
+  assert q = 0 at 2
+  assert q = 1 at 4
+  assert q = 0 at 6
+  assert q = 0 at 10
+  assert q = x at 12
+  assert q = 0 at 14
+  assert q = 1 at 16
+  assert nq = 1 at 0
+  assert nq = 0 at 4
+  assert nq = x at 12
+  assert nq = 1 at 14
+  assert nq = 0 at 16
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! d $end
+$var wire 1 " en $end
+$var wire 1 # rst $end
+$var wire 1 $ q $end
+$var wire 1 % nq $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0"
+0#
+0$
+0%
+1%
+#2
+1!
+#4
+1"
+1$
+0%
+#6
+0!
+0$
+1%
+#8
+0"
+#10
+1!
+#12
+x"
+x$
+x%
+#14
+1#
+0$
+1%
+#16
+1"
+1$
+0%
+0#

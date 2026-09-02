@@ -124,6 +124,10 @@ jobs:
         run: cabal run gatework -- --netlist fixtures/enable.net --duration 20 --output /tmp/enable.vcd --set d=1,en=0,rst=0 --at 4 en=1 --at 8 d=0,en=0 --at 12 en=x --at 16 rst=1 --at 18 rst=0,en=1,d=1
       - name: Compare the enable demo with the golden file
         run: diff fixtures/enable.golden.vcd /tmp/enable.vcd
+      - name: Run the latch demo
+        run: cabal run gatework -- --netlist fixtures/latch.net --duration 16 --output /tmp/latch.vcd --set d=0,en=0,rst=0 --at 2 d=1 --at 4 en=1 --at 6 d=0 --at 8 en=0 --at 10 d=1 --at 12 en=x --at 14 rst=1 --at 16 en=1,d=1,rst=0
+      - name: Compare the latch demo with the golden file
+        run: diff fixtures/latch.golden.vcd /tmp/latch.vcd
       - name: Confirm a missing library file stops the run
         run: |
           if cabal run gatework -- --netlist fixtures/libadder.net --library fixtures/missing.net --duration 0 --output /tmp/none.vcd 2>/tmp/none.log; then

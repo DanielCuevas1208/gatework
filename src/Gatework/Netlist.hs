@@ -4,6 +4,7 @@ module Gatework.Netlist
   , DFlipFlop (..)
   , Gate (..)
   , Instance (..)
+  , Latch (..)
   , Module (..)
   , Netlist (..)
   , Time
@@ -50,6 +51,16 @@ data DFlipFlop = DFlipFlop
   }
   deriving (Eq, Show)
 
+data Latch = Latch
+  { latchName :: String
+  , latchGate :: String
+  , latchData :: [String]
+  , latchOutput :: [String]
+  , latchInitial :: [Logic]
+  , latchReset :: Maybe String
+  }
+  deriving (Eq, Show)
+
 data Gate = Gate
   { gateType :: GateType
   , gateName :: String
@@ -83,6 +94,7 @@ data Netlist = Netlist
   , netlistClocks :: [Clock]
   , netlistGates :: [Gate]
   , netlistFlipFlops :: [DFlipFlop]
+  , netlistLatches :: [Latch]
   , netlistAssertions :: [Assertion]
   , netlistBusWidths :: [(String, Int)]
   }
@@ -95,6 +107,7 @@ data Declaration
   | ClockDeclaration Clock
   | GateDeclaration Gate
   | FlipFlopDeclaration DFlipFlop
+  | LatchDeclaration Latch
   | AssertionDeclaration Assertion
   | InstanceDeclaration Instance
   deriving (Eq, Show)
@@ -118,6 +131,7 @@ data RawDeclaration
   | RawClock Clock
   | RawGate GateType String [Ref] Ref Int Int
   | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref) (Maybe Ref) (Maybe String)
+  | RawLatch String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref)
   | RawAssert Ref Logic Time
   | RawInstance String String [Ref] [Ref]
   deriving (Eq, Show)
@@ -136,7 +150,7 @@ data ParsedNetlist = ParsedNetlist
   }
 
 emptyNetlist :: Netlist
-emptyNetlist = Netlist [] [] [] [] [] [] [] []
+emptyNetlist = Netlist [] [] [] [] [] [] [] [] []
 
 parseNetlistFile :: FilePath -> IO (Either String Netlist)
 parseNetlistFile = parseNetlistFileWithLibraries []
@@ -236,6 +250,8 @@ addDeclaration netlist declaration = case declaration of
   GateDeclaration gate -> netlist {netlistGates = netlistGates netlist ++ [gate]}
   FlipFlopDeclaration flipFlop ->
     netlist {netlistFlipFlops = netlistFlipFlops netlist ++ [flipFlop]}
+  LatchDeclaration latch ->
+    netlist {netlistLatches = netlistLatches netlist ++ [latch]}
   AssertionDeclaration assertion ->
     netlist {netlistAssertions = netlistAssertions netlist ++ [assertion]}
   InstanceDeclaration _ -> netlist
@@ -350,6 +366,35 @@ parseLine (lineNumber, line) = case words line of
       Nothing -> Right Nothing
       Just value -> Just <$> parseRef lineNumber value
     pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset enable tcoText)
+  ("latch" : name : fields) -> do
+    latchName' <- parseIdentifier lineNumber name
+    parsedFields <- mapM (parseLatchField lineNumber) fields
+    gateText <- requiredLatchField lineNumber "gate" parsedFields
+    dataText <- requiredLatchField lineNumber "d" parsedFields
+    outputText <- requiredLatchField lineNumber "q" parsedFields
+    gateRef <- parseRef lineNumber gateText
+    dataRefs <- parseRefListFor lineNumber "latch" "d" dataText
+    outputRefs <- parseRefListFor lineNumber "latch" "q" outputText
+    unless (not (null dataRefs)) $
+      Left (lineError lineNumber "latch requires at least one data input")
+    let initText = lookup "init" parsedFields
+        widthText = lookup "width" parsedFields
+    unless (length [field | field <- parsedFields, fst field == "gate"] <= 1) $
+      Left (lineError lineNumber "latch gate field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "d"] <= 1) $
+      Left (lineError lineNumber "latch d field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "q"] <= 1) $
+      Left (lineError lineNumber "latch q field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "rst"] <= 1) $
+      Left (lineError lineNumber "latch rst field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "init"] <= 1) $
+      Left (lineError lineNumber "latch init field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "width"] <= 1) $
+      Left (lineError lineNumber "latch width field cannot repeat")
+    reset <- case lookup "rst" parsedFields of
+      Nothing -> Right Nothing
+      Just value -> Just <$> parseRef lineNumber value
+    pure (RawLatch latchName' gateRef dataRefs outputRefs initText widthText reset)
   ["assert", signal, "=", value, "at", timeText] -> do
     signalRef <- parseRef lineNumber signal
     logic <- maybe
@@ -368,7 +413,7 @@ parseLine (lineNumber, line) = case words line of
     unless (not (null outputRefs)) $
       Left (lineError lineNumber "instance requires at least one output")
     pure (RawInstance instanceName' moduleName' inputRefs outputRefs)
-  _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, dff, assert, or instance declaration")
+  _ -> Left (lineError lineNumber "expected input, output, wire, clock, gate, dff, latch, assert, or instance declaration")
 
 parsePortsWithWidths :: Int -> String -> Either String [(String, Int)]
 parsePortsWithWidths lineNumber token
@@ -430,10 +475,13 @@ parseIndex lineNumber token = case reads token of
   _ -> Left (lineError lineNumber ("bit index must be a non-negative integer: " ++ token))
 
 parseRefList :: Int -> String -> String -> Either String [Ref]
-parseRefList lineNumber key value = do
+parseRefList lineNumber key value = parseRefListFor lineNumber "dff" key value
+
+parseRefListFor :: Int -> String -> String -> String -> Either String [Ref]
+parseRefListFor lineNumber context key value = do
   let tokens = splitOn ',' value
   unless (all (not . null) tokens) $
-    Left (lineError lineNumber ("dff " ++ key ++ " list cannot contain empty entries"))
+    Left (lineError lineNumber (context ++ " " ++ key ++ " list cannot contain empty entries"))
   mapM (parseRef lineNumber) tokens
 
 parseField :: Int -> String -> Either String (String, String)
@@ -441,6 +489,12 @@ parseField lineNumber field = case break (== '=') field of
   (key, '=' : value)
     | key `elem` ["clock", "d", "q", "init", "rst", "width", "tco", "en"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
+
+parseLatchField :: Int -> String -> Either String (String, String)
+parseLatchField lineNumber field = case break (== '=') field of
+  (key, '=' : value)
+    | key `elem` ["gate", "d", "q", "init", "rst", "width"] && not (null value) -> Right (key, value)
+  _ -> Left (lineError lineNumber ("invalid latch field: " ++ field))
 
 data DelayField = DelayField | RiseField | FallField
   deriving (Eq, Show)
@@ -507,6 +561,11 @@ requiredField :: Int -> String -> [(String, String)] -> Either String String
 requiredField lineNumber key fields = case lookup key fields of
   Just value -> Right value
   Nothing -> Left (lineError lineNumber ("dff requires " ++ key ++ "=<signal>"))
+
+requiredLatchField :: Int -> String -> [(String, String)] -> Either String String
+requiredLatchField lineNumber key fields = case lookup key fields of
+  Just value -> Right value
+  Nothing -> Left (lineError lineNumber ("latch requires " ++ key ++ "=<signal>"))
 
 parseKeyInt :: Int -> String -> String -> Either String Int
 parseKeyInt lineNumber key token = do
@@ -578,6 +637,8 @@ resolveDeclaration signatureModules widths declaration = case declaration of
     resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay
   RawDff name clockRef dataRefs outRefs initText widthText resetRef enableRef tcoText ->
     resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef tcoText
+  RawLatch name gateRef dataRefs outRefs initText widthText resetRef ->
+    resolveLatch widths name gateRef dataRefs outRefs initText widthText resetRef
   RawAssert signalRef value time -> resolveAssertion widths signalRef value time
   RawInstance name targetModule inputRefs outputRefs ->
     resolveInstance signatureModules widths name targetModule inputRefs outputRefs
@@ -648,6 +709,45 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef ena
           resetSignal
           enableSignal
           clockToOutput)
+    | index <- [0 .. width - 1]
+    ]
+
+resolveLatch :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref
+  -> Either String [Declaration]
+resolveLatch widths name gateRef dataRefs outRefs initText widthText resetRef = do
+  gateName <- case resolveRef widths gateRef of
+    Left message -> Left message
+    Right [signal] -> Right signal
+    Right _ -> Left ("latch " ++ name ++ " gate must reference a single signal")
+  dataBits <- concat <$> mapM (resolveRef widths) dataRefs
+  outputBits <- concat <$> mapM (resolveRef widths) outRefs
+  unless (not (null dataBits)) $
+    Left ("latch " ++ name ++ " requires at least one data input")
+  unless (length dataBits == length outputBits) $
+    Left ("latch " ++ name ++ " data and output widths must match")
+  let width = length outputBits
+  case widthText of
+    Nothing -> pure ()
+    Just text -> do
+      declaredWidth <- parseInt text
+      unless (declaredWidth == width) $
+        Left ("latch " ++ name ++ " width must match the data width")
+  initList <- parseInitValuesFor "latch" width initText
+  resetSignal <- case resetRef of
+    Nothing -> Right Nothing
+    Just ref -> case resolveRef widths ref of
+      Left message -> Left message
+      Right [signal] -> Right (Just signal)
+      Right _ -> Left ("latch " ++ name ++ " reset must reference a single signal")
+  pure
+    [ LatchDeclaration
+        (Latch
+          (componentName name width index)
+          gateName
+          [dataBits !! index]
+          [outputBits !! index]
+          [initList !! index]
+          resetSignal)
     | index <- [0 .. width - 1]
     ]
 
@@ -729,20 +829,23 @@ componentName base width index
   | otherwise = base ++ "[" ++ show index ++ "]"
 
 parseInitValues :: Int -> Maybe String -> Either String [Logic]
-parseInitValues width initText = case initText of
+parseInitValues = parseInitValuesFor "dff"
+
+parseInitValuesFor :: String -> Int -> Maybe String -> Either String [Logic]
+parseInitValuesFor context width initText = case initText of
   Nothing -> Right (replicate width Low)
   Just value -> case splitOn ',' value of
     [single] -> maybe
-      (Left "init must be 0, 1, x, or z")
+      (Left (context ++ " init must be 0, 1, x, or z"))
       (Right . replicate width)
       (parseLogic single)
     values -> do
       unless (length values == width) $
-        Left "init list width must match dff width"
+        Left (context ++ " init list width must match its data width")
       mapM parseInitValue values
   where
     parseInitValue token = maybe
-      (Left "init must be 0, 1, x, or z")
+      (Left (context ++ " init must be 0, 1, x, or z"))
       Right
       (parseLogic token)
 
@@ -762,16 +865,21 @@ validateNetlist :: Netlist -> Either String Netlist
 validateNetlist netlist = do
   let clockNames = map clockSignal (netlistClocks netlist)
       dffOutputs = concatMap dffOutput (netlistFlipFlops netlist)
+      latchOutputs = concatMap latchOutput (netlistLatches netlist)
       gateOutputs = map gateOutput (netlistGates netlist)
-      declared = netlistInputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs
-      componentNames = map gateName (netlistGates netlist) ++ map dffName (netlistFlipFlops netlist)
-  checkDuplicates "signal" (netlistInputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs)
+      declared = netlistInputs netlist ++ netlistOutputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs ++ latchOutputs
+      componentNames = map gateName (netlistGates netlist) ++ map dffName (netlistFlipFlops netlist) ++ map latchName (netlistLatches netlist)
+  checkDuplicates "signal"
+    (netlistInputs netlist ++ netlistWires netlist ++ clockNames ++ dffOutputs ++ latchOutputs)
+  checkDuplicates "latch output" latchOutputs
   checkDuplicates "component" componentNames
   checkDuplicates "flip-flop output" dffOutputs
   checkNoGateOnDffOutput dffOutputs gateOutputs
+  checkNoGateOnLatchOutput latchOutputs gateOutputs
   mapM_ (checkKnown declared "output") (netlistOutputs netlist)
   mapM_ (checkGate declared (netlistWires netlist) (netlistOutputs netlist)) (netlistGates netlist)
   mapM_ (checkFlipFlop declared clockNames) (netlistFlipFlops netlist)
+  mapM_ (checkLatch declared (netlistWires netlist) (netlistOutputs netlist)) (netlistLatches netlist)
   mapM_ (checkAssertion (netlistSignals netlist)) (netlistAssertions netlist)
   pure netlist
 
@@ -789,6 +897,17 @@ checkFlipFlop declared clocks flipFlop = do
   mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
   mapM_ (checkKnown declared "dff enable") (maybe [] pure (dffEnable flipFlop))
 
+checkLatch :: [String] -> [String] -> [String] -> Latch -> Either String ()
+checkLatch declared wires outputs latch = do
+  mapM_ checkOutput (latchOutput latch)
+  mapM_ (checkKnown declared "latch gate") [latchGate latch]
+  mapM_ (checkKnown declared "latch data input") (latchData latch)
+  mapM_ (checkKnown declared "latch reset") (maybe [] pure (latchReset latch))
+  where
+    checkOutput output =
+      unless (elem output wires || elem output outputs) $
+        Left ("latch output must be declared as a wire or output: " ++ output)
+
 checkKnown :: [String] -> String -> String -> Either String ()
 checkKnown declared label name =
   unless (name `elem` declared) (Left (label ++ " is not declared: " ++ name))
@@ -798,6 +917,12 @@ checkNoGateOnDffOutput dffOutputs gateOutputs =
   case [name | name <- gateOutputs, name `elem` dffOutputs] of
     [] -> Right ()
     name : _ -> Left ("a gate cannot drive a flip-flop output: " ++ name)
+
+checkNoGateOnLatchOutput :: [String] -> [String] -> Either String ()
+checkNoGateOnLatchOutput latchOutputs gateOutputs =
+  case [name | name <- gateOutputs, name `elem` latchOutputs] of
+    [] -> Right ()
+    name : _ -> Left ("a gate cannot drive a latch output: " ++ name)
 
 checkAssertion :: [String] -> Assertion -> Either String ()
 checkAssertion known assertion =
@@ -831,18 +956,23 @@ validateModule moduleDef = do
       clocks = [clock | ClockDeclaration clock <- moduleBody moduleDef]
       clockSignals = map clockSignal clocks
       dffOutputs = concat [dffOutput flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+      latchOutputs = concat [latchOutput latch | LatchDeclaration latch <- moduleBody moduleDef]
       gateOutputs = [gateOutput gate | GateDeclaration gate <- moduleBody moduleDef]
-      declared = nub (portSignals ++ wires ++ clockSignals ++ dffOutputs)
+      declared = nub (portSignals ++ wires ++ clockSignals ++ dffOutputs ++ latchOutputs)
       componentNames =
         [gateName gate | GateDeclaration gate <- moduleBody moduleDef]
           ++ [dffName flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+          ++ [latchName latch | LatchDeclaration latch <- moduleBody moduleDef]
           ++ [instanceName instanceDef | InstanceDeclaration instanceDef <- moduleBody moduleDef]
   checkDuplicates "signal" declared
+  checkDuplicates "latch output" latchOutputs
   checkDuplicates "component" componentNames
   checkDuplicates "flip-flop output" dffOutputs
   checkNoGateOnDffOutput dffOutputs gateOutputs
+  checkNoGateOnLatchOutput latchOutputs gateOutputs
   mapM_ (checkModuleGate moduleDef declared) (moduleGates moduleDef)
   mapM_ (checkModuleFlipFlop moduleDef declared clockSignals) (moduleFlipFlops moduleDef)
+  mapM_ (checkModuleLatch moduleDef declared) (moduleLatches moduleDef)
   mapM_ (checkAssertion declared) (moduleAssertions moduleDef)
 
 moduleGates :: Module -> [Gate]
@@ -850,6 +980,9 @@ moduleGates moduleDef = [gate | GateDeclaration gate <- moduleBody moduleDef]
 
 moduleFlipFlops :: Module -> [DFlipFlop]
 moduleFlipFlops moduleDef = [flipFlop | FlipFlopDeclaration flipFlop <- moduleBody moduleDef]
+
+moduleLatches :: Module -> [Latch]
+moduleLatches moduleDef = [latch | LatchDeclaration latch <- moduleBody moduleDef]
 
 moduleAssertions :: Module -> [Assertion]
 moduleAssertions moduleDef = [assertion | AssertionDeclaration assertion <- moduleBody moduleDef]
@@ -870,6 +1003,19 @@ checkModuleFlipFlop moduleDef declared clockSignals flipFlop = do
   mapM_ (checkKnown declared "dff data input") (dffData flipFlop)
   mapM_ (checkKnown declared "dff reset") (maybe [] pure (dffReset flipFlop))
   mapM_ (checkKnown declared "dff enable") (maybe [] pure (dffEnable flipFlop))
+
+checkModuleLatch :: Module -> [String] -> Latch -> Either String ()
+checkModuleLatch moduleDef declared latch = do
+  mapM_ checkOutput (latchOutput latch)
+  mapM_ (checkKnown declared "latch gate") [latchGate latch]
+  mapM_ (checkKnown declared "latch data input") (latchData latch)
+  mapM_ (checkKnown declared "latch reset") (maybe [] pure (latchReset latch))
+  where
+    moduleWires = [signal | WireDeclaration signal <- moduleBody moduleDef]
+    moduleOutputs = concatMap (uncurry bitNames) (moduleOutputPorts moduleDef)
+    checkOutput output =
+      unless (elem output moduleWires || elem output moduleOutputs) $
+        Left ("latch output must be declared as wire or module output: " ++ output)
 
 flattenParsed :: ParsedNetlist -> Either String Netlist
 flattenParsed parsed = do
@@ -942,6 +1088,15 @@ expandDeclaration parsed rename instancePrefix stack declaration = case declarat
       , dffEnable = fmap rename (dffEnable flipFlop)
       }
     ]
+  LatchDeclaration latch -> pure
+    [ LatchDeclaration latch
+      { latchName = instancePrefix ++ latchName latch
+      , latchGate = rename (latchGate latch)
+      , latchData = map rename (latchData latch)
+      , latchOutput = map rename (latchOutput latch)
+      , latchReset = fmap rename (latchReset latch)
+      }
+    ]
   AssertionDeclaration assertion -> pure
     [ AssertionDeclaration assertion {assertionSignal = rename (assertionSignal assertion)}
     ]
@@ -955,6 +1110,7 @@ netlistSignals netlist = nub
       ++ netlistOutputs netlist
       ++ map clockSignal (netlistClocks netlist)
       ++ concatMap dffOutput (netlistFlipFlops netlist)
+      ++ concatMap latchOutput (netlistLatches netlist)
       ++ netlistWires netlist
       ++ map gateOutput (netlistGates netlist)
   )
@@ -971,6 +1127,7 @@ inferBusWidths = foldl' addName Map.empty . concatMap declarationNames
       OutputDeclaration name -> [name]
       WireDeclaration name -> [name]
       FlipFlopDeclaration flipFlop -> dffOutput flipFlop
+      LatchDeclaration latch -> latchOutput latch
       _ -> []
     addName widths name = case break (== '[') name of
       (base, '[' : rest)

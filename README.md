@@ -64,6 +64,10 @@ You can do these tasks:
 - Control flip-flop sampling with an explicit enable pin.
 - Hold flip-flop state across clock cycles with a low enable.
 - Resolve unknown enable values against stored flip-flop state.
+- Simulate a level-sensitive latch with transparent and hold phases.
+- Model unknown latch gates with four-state resolution.
+- Reset a latch asynchronously to its initial value.
+- Sample multi-bit latch buses.
 
 ## Architecture
 
@@ -116,6 +120,11 @@ The report writer prints one row per change time.
 The `MAJ` gate normalizes floating inputs before it counts known votes.
 The `MAJ` gate returns a known value when two inputs agree.
 The `MAJ` gate returns unknown when neither value reaches two votes.
+The latch follows data while its gate is high.
+The latch holds its output while its gate is low.
+An unknown latch gate preserves matching state and emits unknown for differing data.
+An asserted latch reset forces its initial value.
+A changed sequential output wakes downstream latches.
 
 The repository layout is:
 
@@ -473,6 +482,41 @@ The delayed instance commits one time unit later.
 | 18 | 1 | 1 | 0 | 1 | 1 | 0 |
 | 19 | 1 | 1 | 0 | 1 | 1 | 1 |
 | 20 | 1 | 1 | 0 | 0 | 1 | 1 |
+
+## Latch demo
+
+Run the level-sensitive latch demo.
+
+```powershell
+cabal run gatework -- --netlist fixtures/latch.net --duration 16 --output latch.vcd --set d=0,en=0,rst=0 --at 2 d=1 --at 4 en=1 --at 6 d=0 --at 8 en=0 --at 10 d=1 --at 12 en=x --at 14 rst=1 --at 16 en=1,d=1,rst=0
+```
+
+The command writes this output:
+
+```text
+Wrote latch.vcd
+Signals: 5
+Duration: 16 time units
+Assertions: 13 passed
+```
+
+The gate is high from time 4 until time 8.
+The latch follows data during that open phase.
+The latch holds its last value while the gate is low.
+An unknown gate produces `x` when data differs from the stored value.
+The reset returns `q` to its initial value.
+
+| Time | d | en | rst | q | nq |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 0 | 0 | 0 | 1 |
+| 2 | 1 | 0 | 0 | 0 | 1 |
+| 4 | 1 | 1 | 0 | 1 | 0 |
+| 6 | 0 | 1 | 0 | 0 | 1 |
+| 8 | 0 | 0 | 0 | 0 | 1 |
+| 10 | 1 | 0 | 0 | 0 | 1 |
+| 12 | 1 | x | 0 | x | x |
+| 14 | 1 | x | 1 | 0 | 1 |
+| 16 | 1 | 1 | 0 | 1 | 0 |
 
 ## Hierarchical adder demo
 
@@ -1170,6 +1214,19 @@ The parser also accepts `dffe` as an alias for `dff`.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
 
+A latch uses `gate=`, `d=`, and `q=` fields.
+It accepts optional `init=`, `rst=`, and `width=` fields.
+The gate must reference one signal.
+A high gate makes the latch transparent.
+A low gate holds the previous output.
+An unknown gate preserves equal data and output values.
+An unknown gate produces `x` when data differs from the output.
+An asserted reset forces the initial value.
+
+```text
+latch state gate=en d=d q=q init=0 rst=rst
+```
+
 The `BUF` gate is a non-inverting buffer.
 It passes low, high, and unknown values.
 It converts a floating `z` input to unknown `x`.
@@ -1518,6 +1575,7 @@ Deterministic tests also cover BUF and MUX truth values, bus behavior, delayed p
 Deterministic tests also cover MAJ truth values, bus behavior, delayed paths, and its golden output.
 Deterministic tests also cover clock enable parsing, hold and sampling behavior, four-state resolution, reset overrides, and the golden output.
 Deterministic tests also cover same-time input priority at clock edges.
+Deterministic tests also cover latch parsing, transparent and held phases, reset behavior, buses, modules, sequential inputs, and golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1533,6 +1591,7 @@ QuickCheck properties also compare every VCD vector value with the per-bit wavef
 QuickCheck properties also cover BUF behavior and MUX selection across all four logic values.
 QuickCheck properties also cover MAJ voting across all four logic values.
 QuickCheck properties also cover clock-enabled flip-flops and four-state enable resolution.
+QuickCheck properties also compare latch waveforms with a level-sensitive event model.
 
 QuickCheck runs one hundred random cases for each property.
 The gate properties cover the complete truth table.
@@ -1549,6 +1608,7 @@ The BUF property shows that direct transfer preserves known values and maps floa
 The MUX property shows that an unknown selector passes equal branches and rejects different branches.
 The MAJ property shows that two known votes determine the output before unresolved inputs matter.
 The enable property compares clock-enabled flip-flop waveforms with a pure reference model across random data and enable sequences.
+The latch property compares transparent and held output phases with a pure reference model.
 The bus XOR property compares a bus gate with per-bit evaluation.
 The bus register property compares each register bit with a reference value.
 The bus hierarchy property shows that a bus module matches its flat circuit.
@@ -1562,8 +1622,8 @@ The asymmetric-delay property compares each output sample with the directional r
 ## Test status
 
 The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
-This release adds deterministic and QuickCheck coverage for clock enables and same-time event ordering.
-Local verification could not run because Cabal is unavailable.
+This release adds deterministic and QuickCheck coverage for clock enables, latches, and same-time event ordering.
+Local verification could not run because Cabal and GHC are unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
 Golden tests compare each fixture VCD with its golden file.
 The golden report test compares the counter report table with its golden file.
@@ -1578,6 +1638,7 @@ CI runs the buffer demo and compares it with its golden file.
 CI runs the MUX demo and compares it with its golden file.
 CI runs the MAJ demo and compares it with its golden file.
 CI runs the enable demo and compares it with its golden file.
+CI runs the latch demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1610,6 +1671,12 @@ A flip-flop with enable samples only on rising clock edges.
 A low enable holds the current stored value.
 An unknown enable produces unknown when data differs from the stored value.
 The `en=` field cannot repeat on one flip-flop.
+The latch gate must reference one signal.
+The latch follows data only while its gate is high.
+The latch holds its output while its gate is low.
+An unknown latch gate produces x when data differs from the stored value.
+The latch reset is active high.
+The latch reset forces its initial value.
 The captured value commits after the clock-to-output delay.
 The clock-to-output delay applies to an asserted reset too.
 The initial flip-flop value settles at time zero without delay.
@@ -1637,6 +1704,7 @@ Modules flatten before simulation, so the VCD stays flat.
 A bus expands into single-bit signals internally.
 The VCD writer groups the bits into one vector again.
 A flip-flop bus output must have a `wire` or `output` declaration.
+A latch bus output must have a `wire` or `output` declaration.
 A reference to a whole bus uses the declared width.
 An assertion addresses one bit, not a whole bus.
 One module declaration cannot live inside another.
@@ -1648,6 +1716,7 @@ The report prints every signal in the stable signal order.
 
 ## Roadmap
 
+Release 0.20.0.0 completed level-sensitive latches, four-state gate handling, reset behavior, and waveform evidence.
 Release 0.19.0.0 completed the clock-enabled sequential primitive, same-time event ordering, and waveform evidence.
 Release 0.18.0.0 completed the MAJ gate and its waveform evidence.
 Release 0.17.0.0 completed the MUX gate and its waveform evidence.
@@ -1669,7 +1738,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Add level-sensitive latch primitives with transparent gating behavior.
+1. Select the next simulator primitive or analysis feature.
 
 ## License
 
