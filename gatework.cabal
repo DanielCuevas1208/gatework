@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.18.0.0
+version:            0.21.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
@@ -13,6 +13,7 @@ description:
   circuits. A module library file stores reusable module definitions.
   The command-line tool loads libraries with the --library option.
   A waveform report command prints the signal values as a text table.
+  An analysis command prints a deterministic netlist summary.
   The command-line tool also sets a whole bus with one bit string.
   Buses render as multi-bit vectors in the VCD timeline.
   A gate can declare a delay with the delay=N field.
@@ -22,7 +23,12 @@ description:
   A three-input MAJ gate returns a known majority and maps an unresolved vote to unknown.
   The scheduler delays each gate transition by the declared amount.
   A flip-flop can declare a clock-to-output delay with the tco=N field.
-  The scheduler commits each flip-flop output after that delay.
+  A flip-flop can declare a clock enable with the en=signal field.
+  The scheduler samples flip-flop data only when enable is high.
+  The scheduler commits each flip-flop output after its declared delay.
+  A latch follows its data input while its gate is high and holds it while low.
+  An unknown latch gate preserves equal state and produces unknown for differing data.
+  Latches support buses, modules, and active-high reset inputs.
   GTKWave and other waveform viewers can open the output.
 homepage:           https://github.com/DanielCuevas1208/gatework
 bug-reports:        https://github.com/DanielCuevas1208/gatework/issues
@@ -36,6 +42,7 @@ extra-source-files:
   fixtures/*.net
   fixtures/*.golden.vcd
   fixtures/*.golden.report
+  fixtures/*.golden.analysis
 extra-doc-files:
   README.md
   CHANGELOG.md
@@ -53,6 +60,7 @@ library
   import:            common-options
   hs-source-dirs:    src
   exposed-modules:
+      Gatework.Analysis
       Gatework.Logic
       Gatework.Netlist
       Gatework.Report
