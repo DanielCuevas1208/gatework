@@ -3,6 +3,7 @@
 Gatework is an event-driven digital logic simulator in Haskell.
 It parses a plain-text netlist, runs the circuit, and writes a VCD waveform file.
 A report command prints the signal values as a text table.
+An analysis command summarizes a netlist without running it.
 GTKWave and other waveform viewers can open the output.
 The simulator uses four logic values: low, high, unknown, and floating.
 Multi-bit buses use bracketed widths and slices.
@@ -27,6 +28,7 @@ You can do these tasks:
 - Build a hierarchical adder from a module library file.
 - Open the VCD output in GTKWave and inspect the waveforms.
 - Print a text waveform report with the report command.
+- Inspect a flattened netlist with the analyze command.
 - Verify gate behavior with QuickCheck property tests.
 - Compare the counter waveform with a repository golden file.
 - Check netlist behavior with waveform assertions.
@@ -71,10 +73,11 @@ You can do these tasks:
 
 ## Architecture
 
-The project has five library modules.
+The project has six library modules.
 
 | Module | Responsibility |
 | --- | --- |
+| `Gatework.Analysis` | Summarizes a flattened netlist |
 | `Gatework.Logic` | Defines logic values and gate functions |
 | `Gatework.Netlist` | Parses, validates, and flattens circuit files |
 | `Gatework.Report` | Renders the waveform as a text table |
@@ -87,6 +90,7 @@ The data flow is:
 library text -> parser -> library module table
 netlist text -> parser -> module table -> flattened netlist -> event queue -> waveform recorder -> VCD
 waveform recorder -> text table (report command)
+netlist -> analysis command -> deterministic circuit summary
 ```
 
 The parser validates names, gate arity, drivers, clocks, and references.
@@ -237,6 +241,42 @@ Each cell shows the settled value at that time.
 Use `--output FILE` to write the table to a file.
 Without `--output`, the table prints to standard output.
 The report uses the same options as the VCD command.
+
+## Netlist analysis
+
+Inspect a netlist without running it.
+
+```powershell
+cabal run gatework -- analyze --netlist fixtures/counter.net
+```
+
+The command reports flattened signals, gate counts, state bits, timing fields, buses, clocks, and assertions.
+
+```text
+Netlist analysis
+================
+Signals: 11
+  inputs: 0
+  outputs: 4
+  wires: 6
+Clocks: 1
+  clk: period 2
+Combinational gates: 6
+  AND: 2
+  NOT: 1
+  XOR: 3
+State:
+  flip-flops: 4 (4 bits)
+  latches: 0 (0 bits)
+Timing:
+  delayed gates: 0
+  clock-to-output delays: 0
+Assertions: 0
+Buses: none
+```
+
+Use `--output FILE` to save the summary.
+The report uses the flattened netlist that the simulator executes.
 
 ## Ripple-carry adder
 
@@ -1565,6 +1605,7 @@ Deterministic tests also cover bus declarations, bitwise gates, bit references, 
 Deterministic tests also cover multi-driver resolution, scheduled driver changes, flip-flop output exclusivity, the shared-bus fixture, and its golden output.
 Deterministic tests also cover module library loading, cross-library module references, duplicate module names, and library file validation.
 Deterministic tests also cover the report command, its header order, its counter table, and its golden output.
+Deterministic tests also cover the netlist analysis report and its golden output.
 Deterministic tests also cover whole-bus input values, their bit order, their error cases, scheduled whole-bus transitions, and their golden output.
 Deterministic tests also cover VCD vectors, their header declarations, their grouped values, four-state vector values, and module-internal bus vectors.
 Deterministic tests also cover gate delay parsing and invalid delay fields.
@@ -1623,12 +1664,15 @@ The asymmetric-delay property compares each output sample with the directional r
 
 The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 This release adds deterministic and QuickCheck coverage for clock enables, latches, and same-time event ordering.
+This release adds a deterministic netlist analysis report and a counter golden file.
 Local verification could not run because Cabal and GHC are unavailable.
+Container verification could not run because the Docker daemon is unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
 Golden tests compare each fixture VCD with its golden file.
 The golden report test compares the counter report table with its golden file.
 CI runs every demo and compares its output with the golden file.
 CI runs the report demo and compares it with the report golden file.
+CI runs the netlist analysis demo and compares it with the analysis golden file.
 CI runs the bus demo with whole-bus input values.
 CI runs the four-state vector demo and compares it with its golden file.
 CI runs the gate delay demo and compares it with its golden file.
@@ -1713,9 +1757,12 @@ The dotted instance names are part of the VCD signal names.
 The report prints one row per change time.
 The report uses the settled value at each time.
 The report prints every signal in the stable signal order.
+The analysis report counts flattened signals and components.
+It does not estimate runtime, memory use, or circuit performance.
 
 ## Roadmap
 
+Release 0.21.0.0 completed the deterministic netlist analysis command and its counter evidence.
 Release 0.20.0.0 completed level-sensitive latches, four-state gate handling, reset behavior, and waveform evidence.
 Release 0.19.0.0 completed the clock-enabled sequential primitive, same-time event ordering, and waveform evidence.
 Release 0.18.0.0 completed the MAJ gate and its waveform evidence.

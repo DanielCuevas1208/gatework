@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.20.0.0
+version:            0.21.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
@@ -13,6 +13,7 @@ description:
   circuits. A module library file stores reusable module definitions.
   The command-line tool loads libraries with the --library option.
   A waveform report command prints the signal values as a text table.
+  An analysis command prints a deterministic netlist summary.
   The command-line tool also sets a whole bus with one bit string.
   Buses render as multi-bit vectors in the VCD timeline.
   A gate can declare a delay with the delay=N field.
@@ -41,6 +42,7 @@ extra-source-files:
   fixtures/*.net
   fixtures/*.golden.vcd
   fixtures/*.golden.report
+  fixtures/*.golden.analysis
 extra-doc-files:
   README.md
   CHANGELOG.md
@@ -58,6 +60,7 @@ library
   import:            common-options
   hs-source-dirs:    src
   exposed-modules:
+      Gatework.Analysis
       Gatework.Logic
       Gatework.Netlist
       Gatework.Report

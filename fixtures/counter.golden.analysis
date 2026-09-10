@@ -1,0 +1,20 @@
+Netlist analysis
+================
+Signals: 11
+  inputs: 0
+  outputs: 4
+  wires: 6
+Clocks: 1
+  clk: period 2
+Combinational gates: 6
+  AND: 2
+  NOT: 1
+  XOR: 3
+State:
+  flip-flops: 4 (4 bits)
+  latches: 0 (0 bits)
+Timing:
+  delayed gates: 0
+  clock-to-output delays: 0
+Assertions: 0
+Buses: none

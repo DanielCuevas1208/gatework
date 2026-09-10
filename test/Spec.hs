@@ -4,8 +4,9 @@ import Control.Monad (forM)
 import Data.Bits (xor)
 import Data.Char (isSpace)
 import Data.Either (isLeft)
-import Data.List (elemIndex, find, foldl', isPrefixOf, nub, sort, sortOn)
+import Data.List (elemIndex, find, foldl', isInfixOf, isPrefixOf, nub, sort, sortOn)
 import qualified Data.Map.Strict as Map
+import Gatework.Analysis (renderAnalysis)
 import Gatework.Logic (GateType (..), Logic (..), evalGate, logicChar, parseLogic)
 import Gatework.Netlist
   ( Assertion (..)
@@ -298,6 +299,8 @@ main = do
     , testReportHeader
     , testReportCounterTable
     , testGoldenCounterReport
+    , testGoldenCounterAnalysis
+    , testAnalysisIncludesTimingBusesAndAssertions
     , testWholeBusAssignmentExpansion
     , testWholeBusAssignmentFourState
     , testWholeBusWidthMismatch
@@ -2372,6 +2375,36 @@ testGoldenCounterReport = do
         simulation <- simulate netlist 8
         pure (renderReport simulation)
   check "counter report matches golden file" (actual == Right golden)
+
+testGoldenCounterAnalysis :: IO Bool
+testGoldenCounterAnalysis = do
+  source <- readFile "fixtures/counter.net"
+  golden <- readFile "fixtures/counter.golden.analysis"
+  let actual = renderAnalysis <$> parseNetlist source
+  check "counter analysis matches golden file" (actual == Right golden)
+
+testAnalysisIncludesTimingBusesAndAssertions :: IO Bool
+testAnalysisIncludesTimingBusesAndAssertions =
+  check "analysis reports timing, buses, and assertions" $ case
+    parseNetlist (unlines
+      [ "input a[4]"
+      , "output q[4]"
+      , "wire y[4]"
+      , "clock clk period=2"
+      , "gate BUF copy (a) -> y delay=2"
+      , "dff reg clock=clk d=y q=q init=0 tco=1"
+      , "assert q[0] = 0 at 0"
+      ]) of
+    Left _ -> False
+    Right netlist ->
+      let report = renderAnalysis netlist
+      in all (`isInfixOf` report)
+        [ "Buses: 3 (12 bits)"
+        , "a: 4 bits"
+        , "delayed gates: 1"
+        , "clock-to-output delays: 1"
+        , "Assertions: 1"
+        ]
 
 wholeBusNetlist :: Either String Netlist
 wholeBusNetlist = parseNetlist (unlines

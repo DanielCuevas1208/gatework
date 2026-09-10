@@ -5,6 +5,19 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.21.0.0] - 2026-09-10
+
+### Added
+
+- Add the `analyze` command for deterministic flattened-netlist summaries.
+- Report signals, gates, clocks, state bits, timing fields, buses, and assertions.
+- Add a counter analysis example, golden output, deterministic test, and CI comparison.
+
+### Changed
+
+- Bump the package version to 0.21.0.0.
+- Update golden VCD files to the new version string.
+
 ## [0.20.0.0] - 2026-09-02
 
 ### Added
