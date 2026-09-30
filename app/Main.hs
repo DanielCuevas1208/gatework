@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Data.List (intercalate)
+import Gatework.Analysis (renderAnalysis)
 import Gatework.Logic (Logic, logicChar)
 import Gatework.Netlist
   ( Netlist
@@ -33,7 +34,7 @@ data Options = Options
   , optionLibraries :: [FilePath]
   }
 
-data Command = CommandRun Options | CommandReport Options
+data Command = CommandRun Options | CommandReport Options | CommandAnalyze Options
 
 defaultOptions :: Options
 defaultOptions = Options Nothing 16 "gatework.vcd" False [] [] []
@@ -48,9 +49,24 @@ main = do
 
 parseCommand :: [String] -> Either String (Maybe Command)
 parseCommand ("report" : rest) = fmap CommandReport <$> parseOptions rest
+parseCommand ("analyze" : rest) = fmap CommandAnalyze <$> parseAnalysisOptions rest
 parseCommand arguments = fmap CommandRun <$> parseOptions arguments
 
 run :: Command -> IO ()
+run (CommandAnalyze options) = do
+  case optionNetlist options of
+    Nothing -> failWith "--netlist is required"
+    Just path -> do
+      parsed <- parseNetlistFileWithLibraries (optionLibraries options) path
+      case parsed of
+        Left message -> failWith message
+        Right netlist -> do
+          let report = renderAnalysis netlist
+          if optionOutputExplicit options
+            then do
+              writeFile (optionOutput options) report
+              putStrLn ("Wrote " ++ optionOutput options)
+            else putStr report
 run command = do
   let options = commandOptions command
   case optionNetlist options of
@@ -81,6 +97,7 @@ run command = do
 commandOptions :: Command -> Options
 commandOptions (CommandRun options) = options
 commandOptions (CommandReport options) = options
+commandOptions (CommandAnalyze options) = options
 
 emit :: Command -> Simulation -> IO Bool
 emit (CommandRun options) simulation = do
@@ -95,6 +112,7 @@ emit (CommandReport options) simulation =
        else do
          putStr text
          pure False
+emit (CommandAnalyze _) _ = pure False
 
 reportAssertions :: Handle -> Simulation -> IO ()
 reportAssertions summaryHandle simulation = case simulationFailures simulation of
@@ -140,6 +158,20 @@ parseOptions arguments = parseMore defaultOptions arguments
         parseMore options {optionScheduled = optionScheduled options ++ [(time, name, logic) | (name, logic) <- values]} rest
       option : _ -> Left ("unknown option: " ++ option)
 
+parseAnalysisOptions :: [String] -> Either String (Maybe Options)
+parseAnalysisOptions arguments = parseMore defaultOptions arguments
+  where
+    parseMore options remaining = case remaining of
+      [] -> Right (Just options)
+      "--help" : _ -> Right Nothing
+      "--netlist" : path : rest ->
+        parseMore options {optionNetlist = Just path} rest
+      "--library" : path : rest ->
+        parseMore options {optionLibraries = optionLibraries options ++ [path]} rest
+      "--output" : path : rest ->
+        parseMore options {optionOutput = path, optionOutputExplicit = True} rest
+      option : _ -> Left ("analyze does not accept option: " ++ option)
+
 parseAssignments :: String -> Either String [(String, String)]
 parseAssignments value = mapM parseAssignment (splitOn ',' value)
   where
@@ -169,10 +201,13 @@ failWith message = do
 
 usage :: String
 usage = intercalate "\n"
-  [ "gatework [report] --netlist FILE [--library FILE] [--duration N] [--output FILE] [--set signal=value] [--at TIME signal=value]"
+  [ "gatework --netlist FILE [--library FILE] [--duration N] [--output FILE] [--set signal=value] [--at TIME signal=value]"
+  , "gatework report --netlist FILE [--library FILE] [--duration N] [--output FILE] [--set signal=value] [--at TIME signal=value]"
+  , "gatework analyze --netlist FILE [--library FILE] [--output FILE]"
   , ""
   , "Simulate a netlist and write a VCD waveform."
   , "Run 'gatework report' to write a text waveform table instead."
+  , "Run 'gatework analyze' to inspect a netlist without simulating it."
   , "Without --output, the report prints to standard output."
   , "Use --library to load reusable module definitions from another file."
   , "Repeat --library to load more than one module file."

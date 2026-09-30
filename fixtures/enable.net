@@ -1,0 +1,24 @@
+﻿# An enabled flip-flop with hold, sample, unknown enable, reset, and tco delay.
+input d
+input en
+input rst
+output q
+output slow
+clock clk period=4
+dff reg clock=clk d=d q=q en=en rst=rst init=0
+dff delayed clock=clk d=d q=slow en=en rst=rst init=0 tco=1
+assert q = 0 at 0
+assert slow = 0 at 0
+assert q = 0 at 2
+assert q = 1 at 6
+assert slow = 0 at 6
+assert slow = 1 at 7
+assert q = 1 at 10
+assert slow = 1 at 10
+assert q = x at 14
+assert slow = 1 at 14
+assert slow = x at 15
+assert q = 0 at 16
+assert slow = 0 at 17
+assert q = 1 at 18
+assert slow = 1 at 19
