@@ -60,6 +60,8 @@ You can do these tasks:
 - Watch a flip-flop output commit after its clock-to-output delay.
 - Capture data at the clock edge, not at the commit time.
 - Delay an asserted reset by the same amount.
+- Apply an active-high synchronous reset on a rising clock edge.
+- Count synchronous resets in netlist analysis.
 - Use a non-inverting `BUF` gate for known and unknown signal paths.
 - Select data with a three-input `MUX` gate.
 - Vote across three inputs with a four-state `MAJ` gate.
@@ -101,9 +103,11 @@ The parser rejects a module name that appears in more than one file.
 The parser expands each instance into the module gates.
 The parser expands each bus into single-bit signals before simulation.
 The flattened netlist uses dotted names for instance signals.
+The parser keeps asynchronous and synchronous reset controls separate.
 The scheduler processes only changed signals.
 The scheduler tracks one committed contribution per gate driver.
 The scheduler resolves several gate drivers into one wire value.
+The scheduler samples synchronous reset at the same rising edge as data.
 A delayed gate commits its new value after its delay elapses.
 A rising output uses the rise delay.
 A falling output uses the fall delay.
@@ -118,6 +122,7 @@ A flip-flop captures the data value at the clock edge.
 An asserted reset forces flip-flop outputs to their initial values.
 The recorder keeps the initial value and every later transition.
 The assertion checker compares declared expectations with the waveform.
+The analysis report counts synchronous reset controls.
 The VCD writer uses stable signal order and stable identifiers.
 The VCD writer groups bus bits into multi-bit vectors.
 The report writer prints one row per change time.
@@ -271,6 +276,7 @@ State:
 Timing:
   delayed gates: 0
   clock-to-output delays: 0
+  synchronous resets: 0
 Assertions: 0
 Buses: none
 ```
@@ -845,6 +851,43 @@ The reset `rst` rises at time 14.
 The output `q` stays 1 until the reset commit lands at time 16.
 Each commit lands two time units after its trigger.
 
+## Synchronous reset demo
+
+Run a flip-flop with a synchronous reset.
+
+```powershell
+cabal run gatework -- --netlist fixtures/syncreset.net --duration 12 --output syncreset.vcd --set d=1,srst=0 --at 3 srst=1 --at 5 d=0 --at 7 srst=0 --at 9 d=1
+```
+
+The command writes this output:
+
+```text
+Wrote syncreset.vcd
+Signals: 4
+Duration: 12 time units
+Assertions: 7 passed
+```
+
+The reset rises at time 3.
+The output stays high until the rising clock edge at time 6.
+The edge applies the reset and sets `q` to zero.
+The reset falls at time 7.
+The next rising edge samples `d` and sets `q` to one.
+
+| Time | d | srst | q | clk |
+| --- | --- | --- | --- | --- |
+| 0 | 1 | 0 | 0 | 0 |
+| 2 | 1 | 0 | 1 | 1 |
+| 3 | 1 | 1 | 1 | 1 |
+| 4 | 1 | 1 | 1 | 0 |
+| 5 | 0 | 1 | 1 | 0 |
+| 6 | 0 | 1 | 0 | 1 |
+| 7 | 0 | 0 | 0 | 1 |
+| 8 | 0 | 0 | 0 | 0 |
+| 9 | 1 | 0 | 0 | 1 |
+| 10 | 1 | 0 | 1 | 1 |
+| 12 | 1 | 0 | 1 | 0 |
+
 ## Bus demo
 
 Run four-bit bus operations with gates and a register.
@@ -1166,6 +1209,9 @@ The output `q` commits to 1 at time 4.
 The reset rises at time 14.
 The output `q` stays 1 until the reset commit lands at time 16.
 
+The file `fixtures/syncreset.golden.vcd` records the edge-only reset waveform.
+Its `q` signal stays high after reset assertion and falls at the next rising edge.
+
 The file `fixtures/buffer.golden.vcd` holds the buffer demo waveform.
 Its timeline shows direct transfer, delayed transfer, and floating-input handling:
 
@@ -1409,6 +1455,19 @@ All bits commit together at the same time.
 dff pair clock=clk d=d0,d1 q=q0,q1 init=0,0 tco=3
 ```
 
+### Synchronous reset
+
+Use the `srst=<signal>` field for an active-high synchronous reset.
+
+```text
+dff state clock=clk d=d q=q init=0 srst=srst
+```
+
+The reset changes the stored output only on a rising clock edge.
+The reset has priority over data and clock enable at that edge.
+The `tco=` field delays the reset commit with the sampled output.
+An asynchronous `rst=` field does not wait for a clock edge.
+
 ### Clock enable
 
 A flip-flop can gate its sampling with a clock enable signal.
@@ -1616,6 +1675,7 @@ Deterministic tests also cover BUF and MUX truth values, bus behavior, delayed p
 Deterministic tests also cover MAJ truth values, bus behavior, delayed paths, and its golden output.
 Deterministic tests also cover clock enable parsing, hold and sampling behavior, four-state resolution, reset overrides, and the golden output.
 Deterministic tests also cover same-time input priority at clock edges.
+Deterministic tests also cover synchronous reset parsing, edge-only behavior, clock-to-output delay, modules, and golden output.
 Deterministic tests also cover latch parsing, transparent and held phases, reset behavior, buses, modules, sequential inputs, and golden output.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
@@ -1665,6 +1725,7 @@ The asymmetric-delay property compares each output sample with the directional r
 The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled container.
 This release adds deterministic and QuickCheck coverage for clock enables, latches, and same-time event ordering.
 This release adds a deterministic netlist analysis report and a counter golden file.
+This release adds synchronous reset coverage for parsing, edge timing, clock-to-output delay, modules, and VCD output.
 Local verification could not run because Cabal and GHC are unavailable.
 Container verification could not run because the Docker daemon is unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
@@ -1682,6 +1743,7 @@ CI runs the buffer demo and compares it with its golden file.
 CI runs the MUX demo and compares it with its golden file.
 CI runs the MAJ demo and compares it with its golden file.
 CI runs the enable demo and compares it with its golden file.
+CI runs the synchronous reset demo and compares it with its golden file.
 CI runs the latch demo and compares it with its golden file.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
@@ -1725,6 +1787,9 @@ The captured value commits after the clock-to-output delay.
 The clock-to-output delay applies to an asserted reset too.
 The initial flip-flop value settles at time zero without delay.
 The `tco=` field cannot repeat on one flip-flop.
+The `srst=` field is an active-high synchronous reset.
+It changes the output only at a rising clock edge.
+An unknown synchronous reset is not asserted.
 A delayed transition uses the input value at its fire time.
 A later input change supersedes an earlier pending transition.
 Zero-delay gates can show combinational settling transients at clock edges and at time zero.
@@ -1762,6 +1827,7 @@ It does not estimate runtime, memory use, or circuit performance.
 
 ## Roadmap
 
+Release 0.22.0.0 completed active-high synchronous flip-flop reset and waveform evidence.
 Release 0.21.0.0 completed the deterministic netlist analysis command and its counter evidence.
 Release 0.20.0.0 completed level-sensitive latches, four-state gate handling, reset behavior, and waveform evidence.
 Release 0.19.0.0 completed the clock-enabled sequential primitive, same-time event ordering, and waveform evidence.
@@ -1785,7 +1851,7 @@ Release 0.2.0.0 completed scheduled input transitions.
 
 Remaining work:
 
-1. Select the next simulator primitive or analysis feature.
+1. Select the next simulator primitive or analysis feature after reviewing circuit use cases.
 
 ## License
 

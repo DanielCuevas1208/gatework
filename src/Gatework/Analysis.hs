@@ -35,6 +35,7 @@ renderAnalysis netlist = unlines
          , "Timing:"
          , "  delayed gates: " ++ show (length (filter hasDelay gates))
          , "  clock-to-output delays: " ++ show (length (filter hasClockToOutputDelay flipFlops))
+         , "  synchronous resets: " ++ show (length (filter hasSynchronousReset flipFlops))
          , "Assertions: " ++ show (length (netlistAssertions netlist))
          ]
       ++ renderBuses (netlistBusWidths netlist)
@@ -82,6 +83,9 @@ hasDelay gate = gateRiseDelay gate > 0 || gateFallDelay gate > 0
 
 hasClockToOutputDelay :: DFlipFlop -> Bool
 hasClockToOutputDelay flipFlop = dffClockToOutput flipFlop > 0
+
+hasSynchronousReset :: DFlipFlop -> Bool
+hasSynchronousReset flipFlop = dffSyncReset flipFlop /= Nothing
 
 dffWidth :: DFlipFlop -> Int
 dffWidth flipFlop = length (dffOutput flipFlop)

@@ -15,6 +15,7 @@ import Gatework.Netlist
   , Netlist (..)
   , dffClockToOutput
   , dffEnable
+  , dffSyncReset
   , netlistAssertions
   , netlistSignals
   , parseNetlist
@@ -335,6 +336,13 @@ main = do
     , testEnableInModule
     , testEnableFixture
     , testGoldenEnableVCD
+    , testParserAcceptsSynchronousReset
+    , testParserRejectsInvalidSynchronousReset
+    , testSynchronousResetWaitsForClock
+    , testSynchronousResetUsesTco
+    , testSynchronousResetInModule
+    , testSynchronousResetFixture
+    , testGoldenSynchronousResetVCD
     , testParserAcceptsLatch
     , testParserRejectsInvalidLatch
     , testLatchTransparentAndHolds
@@ -2388,11 +2396,12 @@ testAnalysisIncludesTimingBusesAndAssertions =
   check "analysis reports timing, buses, and assertions" $ case
     parseNetlist (unlines
       [ "input a[4]"
+      , "input srst"
       , "output q[4]"
       , "wire y[4]"
       , "clock clk period=2"
       , "gate BUF copy (a) -> y delay=2"
-      , "dff reg clock=clk d=y q=q init=0 tco=1"
+      , "dff reg clock=clk d=y q=q init=0 tco=1 srst=srst"
       , "assert q[0] = 0 at 0"
       ]) of
     Left _ -> False
@@ -2403,6 +2412,7 @@ testAnalysisIncludesTimingBusesAndAssertions =
         , "a: 4 bits"
         , "delayed gates: 1"
         , "clock-to-output delays: 1"
+        , "synchronous resets: 1"
         , "Assertions: 1"
         ]
 
@@ -2999,6 +3009,144 @@ testGoldenEnableVCD = do
           20
         pure (renderVCD simulation)
   check "enable VCD matches golden file" (actual == Right golden)
+
+testParserAcceptsSynchronousReset :: IO Bool
+testParserAcceptsSynchronousReset = case
+  parseNetlist (unlines
+    [ "input d"
+    , "input srst"
+    , "output q"
+    , "clock clk period=4"
+    , "dff state clock=clk d=d q=q init=0 srst=srst"
+    ]) of
+    Left _ -> check "parser accepts a synchronous reset on dff" False
+    Right netlist -> check "parser accepts a synchronous reset on dff" $
+      case netlistFlipFlops netlist of
+        [flipFlop] -> dffSyncReset flipFlop == Just "srst"
+        _ -> False
+
+testParserRejectsInvalidSynchronousReset :: IO Bool
+testParserRejectsInvalidSynchronousReset =
+  check "parser rejects invalid synchronous reset fields" $
+    isLeft (parseNetlist (unlines
+      [ "input d"
+      , "input srst1"
+      , "input srst2"
+      , "output q"
+      , "clock clk period=4"
+      , "dff state clock=clk d=d q=q srst=srst1 srst=srst2"
+      ]))
+      && isLeft (parseNetlist (unlines
+        [ "input d"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q srst=missing"
+        ]))
+      && isLeft (parseNetlist (unlines
+        [ "input d"
+        , "input srst[2]"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q srst=srst"
+        ]))
+
+testSynchronousResetWaitsForClock :: IO Bool
+testSynchronousResetWaitsForClock =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input srst"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q init=0 srst=srst"
+        ])
+  in case netlist of
+    Left _ -> check "a synchronous reset waits for a rising clock edge" False
+    Right parsed -> check "a synchronous reset waits for a rising clock edge" $ case
+      simulateWithScheduledInputs parsed [("d", High), ("srst", Low)]
+        [(3, "srst", High)] 5 of
+        Right simulation ->
+          signalChanges simulation "q" == [(0, Low), (2, High)]
+        Left _ -> False
+
+testSynchronousResetUsesTco :: IO Bool
+testSynchronousResetUsesTco =
+  let netlist = parseNetlist (unlines
+        [ "input d"
+        , "input srst"
+        , "output q"
+        , "clock clk period=4"
+        , "dff state clock=clk d=d q=q init=0 srst=srst tco=2"
+        ])
+  in case netlist of
+    Left _ -> check "a synchronous reset uses the clock-to-output delay" False
+    Right parsed -> check "a synchronous reset uses the clock-to-output delay" $ case
+      simulateWithScheduledInputs parsed [("d", High), ("srst", Low)]
+        [(3, "srst", High)] 8 of
+        Right simulation ->
+          signalChanges simulation "q" == [(0, Low), (4, High), (8, Low)]
+        Left _ -> False
+
+testSynchronousResetInModule :: IO Bool
+testSynchronousResetInModule =
+  let netlist = parseNetlist (unlines
+        [ "module sampled (clk,d,srst) -> (q)"
+        , "  dff state clock=clk d=d q=q init=0 srst=srst"
+        , "end"
+        , "input d"
+        , "input srst"
+        , "output q"
+        , "clock clk period=4"
+        , "instance sampled u (clk,d,srst) -> (q)"
+        ])
+  in case netlist of
+    Left _ -> check "a synchronous reset flattens through a module" False
+    Right parsed -> check "a synchronous reset flattens through a module" $ case
+      simulateWithScheduledInputs parsed [("d", High), ("srst", High)]
+        [(3, "srst", Low)] 6 of
+        Right simulation ->
+          valueAt simulation "q" 2 == Low
+            && valueAt simulation "q" 6 == High
+        Left _ -> False
+
+testSynchronousResetFixture :: IO Bool
+testSynchronousResetFixture = do
+  source <- readFile "fixtures/syncreset.net"
+  case parseNetlist source of
+    Left _ -> check "synchronous reset fixture parses" False
+    Right netlist -> check "synchronous reset fixture simulates edge-only reset" $ case
+      simulateWithScheduledInputs netlist
+        [("d", High), ("srst", Low)]
+        [ (3, "srst", High)
+        , (5, "d", Low)
+        , (7, "srst", Low)
+        , (9, "d", High)
+        ]
+        12 of
+        Right simulation ->
+          null (simulationFailures simulation)
+            && length (simulationAssertions simulation) == 7
+            && valueAt simulation "q" 3 == High
+            && valueAt simulation "q" 6 == Low
+            && valueAt simulation "q" 9 == Low
+            && valueAt simulation "q" 10 == High
+        Left _ -> False
+
+testGoldenSynchronousResetVCD :: IO Bool
+testGoldenSynchronousResetVCD = do
+  source <- readFile "fixtures/syncreset.net"
+  golden <- readFile "fixtures/syncreset.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithScheduledInputs netlist
+          [("d", High), ("srst", Low)]
+          [ (3, "srst", High)
+          , (5, "d", Low)
+          , (7, "srst", Low)
+          , (9, "d", High)
+          ]
+          12
+        pure (renderVCD simulation)
+  check "synchronous reset VCD matches golden file" (actual == Right golden)
 
 testParserAcceptsLatch :: IO Bool
 testParserAcceptsLatch =

@@ -16,5 +16,6 @@ State:
 Timing:
   delayed gates: 0
   clock-to-output delays: 0
+  synchronous resets: 0
 Assertions: 0
 Buses: none

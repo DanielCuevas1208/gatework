@@ -5,6 +5,20 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.22.0.0] - 2026-09-30
+
+### Added
+
+- Add the `srst=<signal>` field for active-high synchronous flip-flop reset.
+- Apply synchronous reset at the rising clock edge.
+- Preserve asynchronous reset behavior with the existing `rst=<signal>` field.
+- Add a synchronous reset waveform fixture, golden output, deterministic tests, and CI comparison.
+- Report synchronous reset usage in the netlist analysis.
+
+### Changed
+
+- Bump the package version to 0.22.0.0.
+
 ## [0.21.0.0] - 2026-09-10
 
 ### Added

@@ -459,7 +459,7 @@ edgeSamples netlist signal state =
 
 dffSampleValue :: DFlipFlop -> Int -> WireState -> Logic
 dffSampleValue flipFlop index state
-  | resetAsserted = dffInitial flipFlop !! index
+  | resetAsserted || syncResetAsserted = dffInitial flipFlop !! index
   | otherwise = case dffEnable flipFlop of
       Nothing -> dataVal
       Just enableSignal ->
@@ -470,7 +470,9 @@ dffSampleValue flipFlop index state
           Undefined -> if dataVal == currentQ then currentQ else Undefined
           TriState -> if dataVal == currentQ then currentQ else Undefined
   where
-    resetAsserted = case dffReset flipFlop of
+    resetAsserted = activeReset (dffReset flipFlop)
+    syncResetAsserted = activeReset (dffSyncReset flipFlop)
+    activeReset resetSignal = case resetSignal of
       Just reset -> Map.findWithDefault Low reset state == High
       Nothing -> False
     dataVal = Map.findWithDefault Low (dffData flipFlop !! index) state
