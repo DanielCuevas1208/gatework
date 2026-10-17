@@ -409,6 +409,7 @@ main = do
     , ("clock-to-output delays match a reference model", quickCheckResult propClockToOutputMatchesReference)
     , ("enabled flip-flops match a reference model", quickCheckResult propEnableMatchesReference)
     , ("latches match a level-sensitive reference model", quickCheckResult propLatchMatchesReference)
+    , ("latch closes after same-time data update", quickCheckResult propLatchSameTimeDataThenGate)
     ]
     $ \(label, action) -> do
       result <- action
@@ -4337,3 +4338,13 @@ check :: String -> Bool -> IO Bool
 check label condition = do
   putStrLn (label ++ ": " ++ if condition then "PASS" else "FAIL")
   pure condition
+
+propLatchSameTimeDataThenGate :: Property
+propLatchSameTimeDataThenGate =
+  let source = unlines ["input d", "input en", "output q", "latch state gate=en d=d q=q init=0"]
+      transitions = [(1, "d", Low), (1, "en", High), (2, "d", High), (2, "en", Low)]
+  in case parseNetlist source of
+    Left _ -> property False
+    Right netlist -> case simulateWithScheduledInputs netlist [("d", Low), ("en", Low)] transitions 2 of
+      Left _ -> property False
+      Right simulation -> property (valueAt simulation "q" 2 == High)

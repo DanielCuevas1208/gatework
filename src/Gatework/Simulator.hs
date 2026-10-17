@@ -332,7 +332,7 @@ processSignalEvent netlist byInput duration time signal value pending queue stat
               (immediate, nextQueue) =
                 scheduleCommits time scheduledQueue commits (simWireValues nextState)
               latchEvents = if null latchSamples then [] else [LatchBatch latchSamples]
-          in settleAtTime netlist byInput duration time (pending ++ flipFlopEvents ++ latchEvents ++ immediate)
+          in settleAtTime netlist byInput duration time (latchEvents ++ pending ++ flipFlopEvents ++ immediate)
                nextQueue nextState nextChanges (steps + 1)
 
 processFlipFlopBatch :: Netlist -> InputIndexes -> Time -> Time
