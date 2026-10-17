@@ -2403,7 +2403,7 @@ testAnalysisIncludesTimingBusesAndAssertions =
       , "wire y[4]"
       , "clock clk period=2"
       , "gate BUF copy (a) -> y delay=2"
-      , "dff reg clock=clk d=y q=q init=0 tco=1 srst=srst"
+      , "dff reg clock=clk d=y q=q init=0,0,0,0 tco=1 srst=srst"
       , "assert q[0] = 0 at 0"
       ]) of
     Left _ -> False
@@ -3010,6 +3010,7 @@ testGoldenEnableVCD = do
           ]
           20
         pure (renderVCD simulation)
+  if actual /= Right golden then putStrLn ("[DEBUG-repair] enable VCD actual: " ++ show actual) else pure ()
   check "enable VCD matches golden file" (actual == Right golden)
 
 testParserAcceptsSynchronousReset :: IO Bool

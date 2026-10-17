@@ -2,6 +2,7 @@ module Gatework.Analysis
   ( renderAnalysis
   ) where
 
+import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Gatework.Logic (GateType (..))
 import Gatework.Netlist
@@ -52,7 +53,7 @@ renderClock clock =
 renderGateCounts :: [Gate] -> [String]
 renderGateCounts gates =
   [ "  " ++ gateLabel gateType ++ ": " ++ show count
-  | gateType <- [And, Or, Xor, Not, Nand, Nor, Xnor, Buf, Mux, Maj, Tribuf]
+  | gateType <- sortOn gateLabel [And, Or, Xor, Not, Nand, Nor, Xnor, Buf, Mux, Maj, Tribuf]
   , let count = Map.findWithDefault 0 gateType counts
   , count > 0
   ]
