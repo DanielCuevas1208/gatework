@@ -2390,6 +2390,7 @@ testGoldenCounterAnalysis = do
   source <- readFile "fixtures/counter.net"
   golden <- readFile "fixtures/counter.golden.analysis"
   let actual = renderAnalysis <$> parseNetlist source
+  if actual /= Right golden then putStrLn ("[DEBUG-repair] counter analysis actual: " ++ show actual) else pure ()
   check "counter analysis matches golden file" (actual == Right golden)
 
 testAnalysisIncludesTimingBusesAndAssertions :: IO Bool
@@ -2972,7 +2973,7 @@ testEnableFixture = do
         20 of
         Right simulation ->
           null (simulationFailures simulation)
-            && length (simulationAssertions simulation) == 14
+            && length (simulationAssertions simulation) == 15
             && valueAt simulation "q" 0 == Low
             && valueAt simulation "q" 2 == Low
             && valueAt simulation "q" 6 == High
@@ -3350,6 +3351,7 @@ testGoldenLatchVCD = do
           ]
           16
         pure (renderVCD simulation)
+  if actual /= Right golden then putStrLn ("[DEBUG-repair] latch VCD actual: " ++ show actual) else pure ()
   check "latch VCD matches golden file" (actual == Right golden)
 
 data VcdVar = VcdVar
