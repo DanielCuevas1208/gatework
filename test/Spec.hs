@@ -2405,17 +2405,17 @@ testAnalysisIncludesTimingBusesAndAssertions =
       , "dff reg clock=clk d=y q=q init=0,0,0,0 tco=1 srst=srst"
       , "assert q[0] = 0 at 0"
       ]) of
-    Left _ -> False
+    Left message -> error ("[DEBUG-repair] analysis parse: " ++ message)
     Right netlist ->
       let report = renderAnalysis netlist
-      in all (`isInfixOf` report)
+      in if all (`isInfixOf` report)
         [ "Buses: 3 (12 bits)"
         , "a: 4 bits"
         , "delayed gates: 4"
         , "clock-to-output delays: 1"
         , "synchronous resets: 1"
         , "Assertions: 1"
-        ]
+        ] then True else error ("[DEBUG-repair] analysis report: " ++ report)
 
 wholeBusNetlist :: Either String Netlist
 wholeBusNetlist = parseNetlist (unlines
