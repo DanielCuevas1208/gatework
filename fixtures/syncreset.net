@@ -1,0 +1,16 @@
+# Synchronous reset demo.
+# The reset changes the stored value only on a rising clock edge.
+input d
+input srst
+output q
+clock clk period=4
+
+dff state clock=clk d=d q=q init=0 srst=srst
+
+assert q = 0 at 0
+assert q = 1 at 2
+assert q = 1 at 5
+assert q = 0 at 6
+assert q = 0 at 9
+assert q = 1 at 10
+assert q = 1 at 12
