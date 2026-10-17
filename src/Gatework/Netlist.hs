@@ -238,7 +238,7 @@ usefulLines :: String -> [(Int, String)]
 usefulLines source =
   [ (lineNumber, cleaned)
   | (lineNumber, raw) <- zip [1 :: Int ..] (lines source)
-  , let cleaned = trim (takeWhile (/= '#') raw)
+  , let cleaned = trim (takeWhile (/= '#') (dropWhile (== '\xfeff') raw))
   , not (null cleaned)
   ]
 

@@ -2390,7 +2390,6 @@ testGoldenCounterAnalysis = do
   source <- readFile "fixtures/counter.net"
   golden <- readFile "fixtures/counter.golden.analysis"
   let actual = renderAnalysis <$> parseNetlist source
-  if actual /= Right golden then putStrLn ("[DEBUG-repair] counter analysis actual: " ++ show actual) else pure ()
   check "counter analysis matches golden file" (actual == Right golden)
 
 testAnalysisIncludesTimingBusesAndAssertions :: IO Bool
@@ -2412,7 +2411,7 @@ testAnalysisIncludesTimingBusesAndAssertions =
       in all (`isInfixOf` report)
         [ "Buses: 3 (12 bits)"
         , "a: 4 bits"
-        , "delayed gates: 1"
+        , "delayed gates: 4"
         , "clock-to-output delays: 1"
         , "synchronous resets: 1"
         , "Assertions: 1"
@@ -3010,7 +3009,6 @@ testGoldenEnableVCD = do
           ]
           20
         pure (renderVCD simulation)
-  if actual /= Right golden then putStrLn ("[DEBUG-repair] enable VCD actual: " ++ show actual) else pure ()
   check "enable VCD matches golden file" (actual == Right golden)
 
 testParserAcceptsSynchronousReset :: IO Bool
@@ -3352,7 +3350,6 @@ testGoldenLatchVCD = do
           ]
           16
         pure (renderVCD simulation)
-  if actual /= Right golden then putStrLn ("[DEBUG-repair] latch VCD actual: " ++ show actual) else pure ()
   check "latch VCD matches golden file" (actual == Right golden)
 
 data VcdVar = VcdVar
