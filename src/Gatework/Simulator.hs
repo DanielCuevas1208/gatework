@@ -266,7 +266,7 @@ initialWaveform netlist state =
 addInitialEvents :: EventQueue -> [Pending] -> EventQueue
 addInitialEvents queue events = Map.insertWith (++) 0 events queue
 
-clockQueue :: Netlist -> Time -> EventQueue
+clockQueue :: Netlist -> Time -> EventQueue -> EventQueue
 clockQueue netlist duration initialQueue =
   foldl' addClock initialQueue (netlistClocks netlist)
   where
