@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gatework
-version:            0.22.0.0
+version:            0.23.0.0
 synopsis:           Event-driven digital logic simulation in Haskell
 description:
   Gatework parses typed netlists, runs combinational gates and D
@@ -27,6 +27,8 @@ description:
   The scheduler samples flip-flop data only when enable is high.
   A flip-flop can declare a synchronous reset with the srst=signal field.
   The scheduler applies a synchronous reset only on a rising clock edge.
+  A flip-flop can declare setup and hold timing windows.
+  The simulator reports digital transitions inside those windows.
   The scheduler commits each flip-flop output after its declared delay.
   A latch follows its data input while its gate is high and holds it while low.
   An unknown latch gate preserves equal state and produces unknown for differing data.
@@ -47,6 +49,7 @@ extra-source-files:
   fixtures/*.golden.analysis
 extra-doc-files:
   README.md
+  ROADMAP.md
   CHANGELOG.md
 tested-with:        GHC ==9.6.*
 

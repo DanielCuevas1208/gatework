@@ -39,8 +39,9 @@ renderVCD simulation = header ++ timeline
              ]
       )
     commentLines
-      | null assertions = []
-      | otherwise = "$comment" : map renderAssertion assertions ++ ["$end"]
+      | null comments = []
+      | otherwise = "$comment" : comments ++ ["$end"]
+    comments = map renderAssertion assertions ++ map renderTimingViolation (simulationTimingViolations simulation)
     assertions = simulationAssertions simulation
     renderAssertion assertion = concat
       [ "  assert "
@@ -50,6 +51,24 @@ renderVCD simulation = header ++ timeline
       , " at "
       , show (assertionTime assertion)
       ]
+    renderTimingViolation violation = concat
+      [ "  "
+      , timingKind (timingViolationKind violation)
+      , " violation on "
+      , timingViolationFlipFlop violation
+      , ": data "
+      , timingViolationDataSignal violation
+      , " changed to "
+      , [logicChar (timingViolationDataValue violation)]
+      , " at time "
+      , show (timingViolationDataTime violation)
+      , "; clock "
+      , timingViolationClockSignal violation
+      , " rose at time "
+      , show (timingViolationClockTime violation)
+      ]
+    timingKind SetupViolation = "setup"
+    timingKind HoldViolation = "hold"
     timeline = concatMap (renderTime simulation identifiers) (changeTimes simulation)
 
 writeVCD :: FilePath -> Simulation -> IO ()

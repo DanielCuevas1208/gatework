@@ -14,8 +14,11 @@ import Gatework.Simulator
   ( AssertionFailure (..)
   , Simulation
   , Time
+  , TimingViolation (..)
+  , TimingViolationKind (..)
   , simulationAssertions
   , simulationFailures
+  , simulationTimingViolations
   , simulateWithScheduledInputs
   )
 import Gatework.VCD (writeVCD)
@@ -92,6 +95,7 @@ run command = do
                         else pure ()
                       hPutStrLn summaryHandle ("Signals: " ++ show (length (netlistSignals netlist)))
                       hPutStrLn summaryHandle ("Duration: " ++ show (optionDuration options) ++ " time units")
+                      reportTimingViolations summaryHandle simulation
                       reportAssertions summaryHandle simulation
 
 commandOptions :: Command -> Options
@@ -123,6 +127,33 @@ reportAssertions summaryHandle simulation = case simulationFailures simulation o
   failures -> do
     mapM_ (hPutStrLn stderr . renderFailure) failures
     exitFailure
+
+reportTimingViolations :: Handle -> Simulation -> IO ()
+reportTimingViolations summaryHandle simulation = case simulationTimingViolations simulation of
+  [] -> pure ()
+  violations -> do
+    hPutStrLn summaryHandle ("Timing violations: " ++ show (length violations))
+    mapM_ (hPutStrLn summaryHandle . renderTimingViolation) violations
+
+renderTimingViolation :: TimingViolation -> String
+renderTimingViolation violation = concat
+  [ timingKind (timingViolationKind violation)
+  , " violation: "
+  , timingViolationFlipFlop violation
+  , " data "
+  , timingViolationDataSignal violation
+  , " changed to "
+  , [logicChar (timingViolationDataValue violation)]
+  , " at time "
+  , show (timingViolationDataTime violation)
+  , "; clock "
+  , timingViolationClockSignal violation
+  , " rose at time "
+  , show (timingViolationClockTime violation)
+  ]
+  where
+    timingKind SetupViolation = "setup"
+    timingKind HoldViolation = "hold"
 
 renderFailure :: AssertionFailure -> String
 renderFailure failure = concat

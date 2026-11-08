@@ -9,6 +9,8 @@ The simulator uses four logic values: low, high, unknown, and floating.
 Multi-bit buses use bracketed widths and slices.
 Reusable modules can live in separate library files.
 
+Roadmap: [ROADMAP.md](ROADMAP.md)
+
 ## Value
 
 Gatework makes digital state changes easy to inspect.
@@ -60,6 +62,8 @@ You can do these tasks:
 - Watch a flip-flop output commit after its clock-to-output delay.
 - Capture data at the clock edge, not at the commit time.
 - Delay an asserted reset by the same amount.
+- Detect setup and hold violations around rising clock edges.
+- Export timing findings beside the VCD waveform evidence.
 - Apply an active-high synchronous reset on a rising clock edge.
 - Count synchronous resets in netlist analysis.
 - Use a non-inverting `BUF` gate for known and unknown signal paths.
@@ -93,6 +97,7 @@ library text -> parser -> library module table
 netlist text -> parser -> module table -> flattened netlist -> event queue -> waveform recorder -> VCD
 waveform recorder -> text table (report command)
 netlist -> analysis command -> deterministic circuit summary
+waveform recorder -> timing checker -> CLI findings and VCD comments
 ```
 
 The parser validates names, gate arity, drivers, clocks, and references.
@@ -108,6 +113,8 @@ The scheduler processes only changed signals.
 The scheduler tracks one committed contribution per gate driver.
 The scheduler resolves several gate drivers into one wire value.
 The scheduler samples synchronous reset at the same rising edge as data.
+The parser stores optional setup and hold windows on each flip-flop.
+The timing checker reports settled data transitions near rising edges.
 A delayed gate commits its new value after its delay elapses.
 A rising output uses the rise delay.
 A falling output uses the fall delay.
@@ -1296,6 +1303,7 @@ A flip-flop uses `clock=`, `d=`, and `q=` fields.
 It accepts optional `init=`, `rst=`, and `width=` fields.
 It accepts an optional `tco=` clock-to-output delay field.
 It accepts an optional `en=` clock enable field.
+It accepts optional `setup=` and `hold=` timing windows.
 The parser also accepts `dffe` as an alias for `dff`.
 Flip-flop clocks must be declared `clock` signals.
 Clock periods use even integers of at least two.
@@ -1467,6 +1475,47 @@ The reset changes the stored output only on a rising clock edge.
 The reset has priority over data and clock enable at that edge.
 The `tco=` field delays the reset commit with the sampled output.
 An asynchronous `rst=` field does not wait for a clock edge.
+
+### Setup and hold checks
+
+Use `setup=N` and `hold=N` on a flip-flop.
+The values use simulation time units.
+Each value must be a non-negative integer.
+A zero value disables that check.
+
+Setup checking includes data transitions from `edge - N` through the rising edge.
+Hold checking includes data transitions after the edge through `edge + N`.
+The setup start and hold end boundaries are inclusive.
+A data transition at the edge reports a setup finding only.
+Each finding names the flip-flop, data signal, clock signal, and both timestamps.
+The CLI prints findings after the waveform summary.
+The VCD stores the same findings in its comment block.
+
+```text
+dff state clock=clk d=d q=q init=0 setup=2 hold=2
+```
+
+### Setup and hold demo
+
+Run a fixture with boundary transitions.
+
+```powershell
+cabal run gatework -- --netlist fixtures/setuphold.net --duration 4 --output setuphold.vcd --set d=0 --at 0 d=1 --at 4 d=0
+```
+
+The command writes this output:
+
+```text
+Wrote setuphold.vcd
+Signals: 3
+Duration: 4 time units
+Timing violations: 2
+setup violation: state data d changed to 1 at time 0; clock clk rose at time 2
+hold violation: state data d changed to 0 at time 4; clock clk rose at time 2
+```
+
+Open `setuphold.vcd` in GTKWave.
+The comment block records both findings beside the waveform.
 
 ### Clock enable
 
@@ -1677,6 +1726,8 @@ Deterministic tests also cover clock enable parsing, hold and sampling behavior,
 Deterministic tests also cover same-time input priority at clock edges.
 Deterministic tests also cover synchronous reset parsing, edge-only behavior, clock-to-output delay, modules, and golden output.
 Deterministic tests also cover latch parsing, transparent and held phases, reset behavior, buses, modules, sequential inputs, and golden output.
+Deterministic tests also cover setup and hold parsing, exact window boundaries, simultaneous data and clock events, clean outside-window transitions, and VCD comments.
+They also confirm that timing findings do not change the simulated waveform.
 QuickCheck properties cover gate algebra, full adder correctness, scheduled input sampling, reset sampling, register width, and assertion soundness.
 QuickCheck properties also compare the hierarchical adder and counter with their flat versions.
 QuickCheck properties also cover the four-state model and the tri-state buffer truth table.
@@ -1726,6 +1777,7 @@ The previous release passed on GHC 9.6.7 with Cabal 3.14 in the bundled containe
 This release adds deterministic and QuickCheck coverage for clock enables, latches, and same-time event ordering.
 This release adds a deterministic netlist analysis report and a counter golden file.
 This release adds synchronous reset coverage for parsing, edge timing, clock-to-output delay, modules, and VCD output.
+This release adds setup and hold coverage for parsing, exact boundaries, simultaneous events, and VCD evidence.
 Local verification could not run because Cabal and GHC are unavailable.
 Container verification could not run because the Docker daemon is unavailable.
 The CI workflow runs the checks on Ubuntu with GHC 9.6.6.
@@ -1745,6 +1797,7 @@ CI runs the MAJ demo and compares it with its golden file.
 CI runs the enable demo and compares it with its golden file.
 CI runs the synchronous reset demo and compares it with its golden file.
 CI runs the latch demo and compares it with its golden file.
+CI runs the setup and hold demo and checks its CLI findings.
 CI confirms that a missing library file stops the run.
 CI confirms that an invalid gate delay stops the run.
 
@@ -1824,9 +1877,14 @@ The report uses the settled value at each time.
 The report prints every signal in the stable signal order.
 The analysis report counts flattened signals and components.
 It does not estimate runtime, memory use, or circuit performance.
+Timing checks inspect settled digital transitions.
+They do not model analog metastability.
+Timing findings do not change the sampled flip-flop state.
+The simulator cannot observe hold transitions after the run duration.
 
 ## Roadmap
 
+Release 0.23.0.0 implements setup and hold checks with timestamped VCD evidence.
 Release 0.22.0.0 completed active-high synchronous flip-flop reset and waveform evidence.
 Release 0.21.0.0 completed the deterministic netlist analysis command and its counter evidence.
 Release 0.20.0.0 completed level-sensitive latches, four-state gate handling, reset behavior, and waveform evidence.
@@ -1849,9 +1907,7 @@ Release 0.4.0.0 completed waveform assertions and VCD comment metadata.
 Release 0.3.0.0 completed reset pins and parameterized flip-flops.
 Release 0.2.0.0 completed scheduled input transitions.
 
-Remaining work:
-
-1. Select the next simulator primitive or analysis feature after reviewing circuit use cases.
+See [ROADMAP.md](ROADMAP.md) for the ordered next milestones.
 
 ## License
 

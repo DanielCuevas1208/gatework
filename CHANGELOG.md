@@ -5,6 +5,21 @@ All notable changes to Gatework appear in this file.
 The format follows the Keep a Changelog convention.
 This project uses semantic versioning.
 
+## [0.23.0.0] - 2026-11-08
+
+### Added
+
+- Add optional `setup=N` and `hold=N` windows to flip-flop declarations.
+- Report timestamped setup and hold findings in the CLI.
+- Check the setup and hold CLI output in CI.
+- Add setup and hold findings to VCD comment metadata.
+- Add a setup and hold fixture, golden waveform, deterministic tests, and CI comparison.
+- Add an ordered roadmap for the next two bounded analysis releases.
+
+### Changed
+
+- Bump the package version to 0.23.0.0.
+
 ## [0.22.0.0] - 2026-09-30
 
 ### Added

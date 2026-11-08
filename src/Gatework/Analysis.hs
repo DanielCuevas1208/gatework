@@ -37,7 +37,9 @@ renderAnalysis netlist = unlines
          , "  delayed gates: " ++ show (length (filter hasDelay gates))
          , "  clock-to-output delays: " ++ show (length (filter hasClockToOutputDelay flipFlops))
          , "  synchronous resets: " ++ show (length (filter hasSynchronousReset flipFlops))
-         , "Assertions: " ++ show (length (netlistAssertions netlist))
+         ]
+      ++ renderTimingWindows flipFlops
+      ++ [ "Assertions: " ++ show (length (netlistAssertions netlist))
          ]
       ++ renderBuses (netlistBusWidths netlist)
   )
@@ -87,6 +89,20 @@ hasClockToOutputDelay flipFlop = dffClockToOutput flipFlop > 0
 
 hasSynchronousReset :: DFlipFlop -> Bool
 hasSynchronousReset flipFlop = dffSyncReset flipFlop /= Nothing
+
+renderTimingWindows :: [DFlipFlop] -> [String]
+renderTimingWindows flipFlops
+  | any hasSetupWindow flipFlops || any hasHoldWindow flipFlops =
+      [ "  setup windows: " ++ show (length (filter hasSetupWindow flipFlops))
+      , "  hold windows: " ++ show (length (filter hasHoldWindow flipFlops))
+      ]
+  | otherwise = []
+
+hasSetupWindow :: DFlipFlop -> Bool
+hasSetupWindow flipFlop = dffSetupWindow flipFlop > 0
+
+hasHoldWindow :: DFlipFlop -> Bool
+hasHoldWindow flipFlop = dffHoldWindow flipFlop > 0
 
 dffWidth :: DFlipFlop -> Int
 dffWidth flipFlop = length (dffOutput flipFlop)
