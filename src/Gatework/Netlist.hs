@@ -49,6 +49,8 @@ data DFlipFlop = DFlipFlop
   , dffSyncReset :: Maybe String
   , dffEnable :: Maybe String
   , dffClockToOutput :: Int
+  , dffSetupWindow :: Int
+  , dffHoldWindow :: Int
   }
   deriving (Eq, Show)
 
@@ -131,7 +133,7 @@ data RawDeclaration
   | RawWire String Int
   | RawClock Clock
   | RawGate GateType String [Ref] Ref Int Int
-  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref) (Maybe Ref) (Maybe Ref) (Maybe String)
+  | RawDff String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref) (Maybe Ref) (Maybe Ref) (Maybe String) (Maybe String) (Maybe String)
   | RawLatch String Ref [Ref] [Ref] (Maybe String) (Maybe String) (Maybe Ref)
   | RawAssert Ref Logic Time
   | RawInstance String String [Ref] [Ref]
@@ -350,6 +352,8 @@ parseLine (lineNumber, line) = case words line of
     let initText = lookup "init" parsedFields
         widthText = lookup "width" parsedFields
         tcoText = lookup "tco" parsedFields
+        setupText = lookup "setup" parsedFields
+        holdText = lookup "hold" parsedFields
     unless (length [field | field <- parsedFields, fst field == "tco"] <= 1) $
       Left (lineError lineNumber "dff tco field cannot repeat")
     unless (length [field | field <- parsedFields, fst field == "en"] <= 1) $
@@ -362,6 +366,10 @@ parseLine (lineNumber, line) = case words line of
       Left (lineError lineNumber "dff init field cannot repeat")
     unless (length [field | field <- parsedFields, fst field == "width"] <= 1) $
       Left (lineError lineNumber "dff width field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "setup"] <= 1) $
+      Left (lineError lineNumber "dff setup field cannot repeat")
+    unless (length [field | field <- parsedFields, fst field == "hold"] <= 1) $
+      Left (lineError lineNumber "dff hold field cannot repeat")
     reset <- case lookup "rst" parsedFields of
       Nothing -> Right Nothing
       Just value -> Just <$> parseRef lineNumber value
@@ -371,7 +379,7 @@ parseLine (lineNumber, line) = case words line of
     enable <- case lookup "en" parsedFields of
       Nothing -> Right Nothing
       Just value -> Just <$> parseRef lineNumber value
-    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset enable syncReset tcoText)
+    pure (RawDff dffName' clock dataRefs outputRefs initText widthText reset enable syncReset tcoText setupText holdText)
   ("latch" : name : fields) -> do
     latchName' <- parseIdentifier lineNumber name
     parsedFields <- mapM (parseLatchField lineNumber) fields
@@ -493,7 +501,7 @@ parseRefListFor lineNumber context key value = do
 parseField :: Int -> String -> Either String (String, String)
 parseField lineNumber field = case break (== '=') field of
   (key, '=' : value)
-    | key `elem` ["clock", "d", "q", "init", "rst", "srst", "width", "tco", "en"] && not (null value) -> Right (key, value)
+    | key `elem` ["clock", "d", "q", "init", "rst", "srst", "width", "tco", "en", "setup", "hold"] && not (null value) -> Right (key, value)
   _ -> Left (lineError lineNumber ("invalid dff field: " ++ field))
 
 parseLatchField :: Int -> String -> Either String (String, String)
@@ -641,8 +649,8 @@ resolveDeclaration signatureModules widths declaration = case declaration of
   RawClock clock -> Right [ClockDeclaration clock]
   RawGate gateKind name inputRefs outputRef riseDelay fallDelay ->
     resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay
-  RawDff name clockRef dataRefs outRefs initText widthText resetRef enableRef syncResetRef tcoText ->
-    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef syncResetRef tcoText
+  RawDff name clockRef dataRefs outRefs initText widthText resetRef enableRef syncResetRef tcoText setupText holdText ->
+    resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef syncResetRef tcoText setupText holdText
   RawLatch name gateRef dataRefs outRefs initText widthText resetRef ->
     resolveLatch widths name gateRef dataRefs outRefs initText widthText resetRef
   RawAssert signalRef value time -> resolveAssertion widths signalRef value time
@@ -670,9 +678,9 @@ resolveGate widths gateKind name inputRefs outputRef riseDelay fallDelay = do
     | index <- [0 .. width - 1]
     ]
 
-resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref -> Maybe Ref -> Maybe Ref -> Maybe String
+resolveDff :: Map String Int -> String -> Ref -> [Ref] -> [Ref] -> Maybe String -> Maybe String -> Maybe Ref -> Maybe Ref -> Maybe Ref -> Maybe String -> Maybe String -> Maybe String
   -> Either String [Declaration]
-resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef syncResetRef tcoText = do
+resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef enableRef syncResetRef tcoText setupText holdText = do
   clockName <- case resolveRef widths clockRef of
     Left message -> Left message
     Right [signal] -> Right signal
@@ -692,6 +700,8 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef ena
         Left ("dff " ++ name ++ " width must match the data width")
   initList <- parseInitValues width initText
   clockToOutput <- parseClockToOutput tcoText
+  setupWindow <- parseTimingWindow "dff setup" setupText
+  holdWindow <- parseTimingWindow "dff hold" holdText
   resetSignal <- case resetRef of
     Nothing -> Right Nothing
     Just ref -> case resolveRef widths ref of
@@ -721,7 +731,9 @@ resolveDff widths name clockRef dataRefs outRefs initText widthText resetRef ena
           resetSignal
           syncResetSignal
           enableSignal
-          clockToOutput)
+          clockToOutput
+          setupWindow
+          holdWindow)
     | index <- [0 .. width - 1]
     ]
 
@@ -873,6 +885,13 @@ parseClockToOutput text = case text of
   Just token -> case reads token of
     [(number, "")] | number >= 0 -> Right number
     _ -> Left ("dff tco must be a non-negative integer: " ++ token)
+
+parseTimingWindow :: String -> Maybe String -> Either String Int
+parseTimingWindow label text = case text of
+  Nothing -> Right 0
+  Just token -> case reads token of
+    [(number, "")] | number >= 0 -> Right number
+    _ -> Left (label ++ " window must be a non-negative integer: " ++ token)
 
 validateNetlist :: Netlist -> Either String Netlist
 validateNetlist netlist = do

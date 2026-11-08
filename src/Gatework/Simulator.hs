@@ -2,6 +2,8 @@ module Gatework.Simulator
   ( Assertion (..)
   , AssertionFailure (..)
   , Simulation (..)
+  , TimingViolation (..)
+  , TimingViolationKind (..)
   , Time
   , resolveValue
   , signalChanges
@@ -23,6 +25,7 @@ data Simulation = Simulation
   , simulationChanges :: Map String [(Time, Logic)]
   , simulationAssertions :: [Assertion]
   , simulationFailures :: [AssertionFailure]
+  , simulationTimingViolations :: [TimingViolation]
   }
   deriving (Eq, Show)
 
@@ -31,6 +34,22 @@ data AssertionFailure = AssertionFailure
   , failureTime :: Time
   , failureExpected :: Logic
   , failureActual :: Logic
+  }
+  deriving (Eq, Show)
+
+data TimingViolationKind
+  = SetupViolation
+  | HoldViolation
+  deriving (Eq, Show)
+
+data TimingViolation = TimingViolation
+  { timingViolationKind :: TimingViolationKind
+  , timingViolationFlipFlop :: String
+  , timingViolationDataSignal :: String
+  , timingViolationClockSignal :: String
+  , timingViolationClockTime :: Time
+  , timingViolationDataTime :: Time
+  , timingViolationDataValue :: Logic
   }
   deriving (Eq, Show)
 
@@ -179,6 +198,7 @@ simulateWithScheduledInputs netlist inputOverrides scheduledInputs duration
       pure result
         { simulationAssertions = assertions
         , simulationFailures = checkAssertions assertions result
+        , simulationTimingViolations = checkTimingViolations netlist result
         }
 
 validateAssertionTimes :: Netlist -> Time -> Either String ()
@@ -210,6 +230,59 @@ checkAssertions assertions simulation =
     valueAt time changes = case reverse [(t, value) | (t, value) <- changes, t <= time] of
       (_, value) : _ -> Just value
       [] -> Nothing
+
+checkTimingViolations :: Netlist -> Simulation -> [TimingViolation]
+checkTimingViolations netlist simulation = concatMap checkFlipFlop (netlistFlipFlops netlist)
+  where
+    changes = simulationChanges simulation
+    checkFlipFlop flipFlop =
+      concatMap (checkDataSignal flipFlop) (dffData flipFlop)
+    checkDataSignal flipFlop dataSignal =
+      concatMap (checkClockEdge flipFlop dataSignal) (risingEdges (signalChanges simulation (dffClock flipFlop)))
+    checkClockEdge flipFlop dataSignal clockTime =
+      setupFindings ++ holdFindings
+      where
+        dataTransitions = actualTransitions (Map.findWithDefault [] dataSignal changes)
+        setupFindings =
+          [ TimingViolation
+              SetupViolation
+              (dffName flipFlop)
+              dataSignal
+              (dffClock flipFlop)
+              clockTime
+              dataTime
+              dataValue
+          | dffSetupWindow flipFlop > 0
+          , (dataTime, dataValue) <- dataTransitions
+          , dataTime >= clockTime - fromIntegral (dffSetupWindow flipFlop)
+          , dataTime <= clockTime
+          ]
+        holdFindings =
+          [ TimingViolation
+              HoldViolation
+              (dffName flipFlop)
+              dataSignal
+              (dffClock flipFlop)
+              clockTime
+              dataTime
+              dataValue
+          | dffHoldWindow flipFlop > 0
+          , (dataTime, dataValue) <- dataTransitions
+          , dataTime > clockTime
+          , dataTime <= clockTime + fromIntegral (dffHoldWindow flipFlop)
+          ]
+
+actualTransitions :: [(Time, Logic)] -> [(Time, Logic)]
+actualTransitions [] = []
+actualTransitions (_ : transitions) = transitions
+
+risingEdges :: [(Time, Logic)] -> [Time]
+risingEdges changes =
+  [ time
+  | ((_, previous), (time, current)) <- zip changes (drop 1 changes)
+  , previous == Low
+  , current == High
+  ]
 
 validateInputOverrides :: Netlist -> [(String, Logic)] -> Either String ()
 validateInputOverrides netlist overrides = do
@@ -287,10 +360,10 @@ clockValue clock time =
 runQueue :: Netlist -> InputIndexes -> Time -> EventQueue -> SimState -> Changes
   -> Either String Simulation
 runQueue netlist byInput duration queue state changes = case Map.minViewWithKey queue of
-  Nothing -> Right (Simulation duration (netlistSignals netlist) (netlistBusWidths netlist) changes [] [])
+  Nothing -> Right (Simulation duration (netlistSignals netlist) (netlistBusWidths netlist) changes [] [] [])
   Just ((time, pending), remaining)
     | time > duration ->
-        Right (Simulation duration (netlistSignals netlist) (netlistBusWidths netlist) changes [] [])
+        Right (Simulation duration (netlistSignals netlist) (netlistBusWidths netlist) changes [] [] [])
     | otherwise -> do
         (nextQueue, nextState, nextChanges) <-
           settleAtTime netlist byInput duration time pending remaining state changes 0

@@ -1,0 +1,4 @@
+input d
+output q
+clock clk period=4
+dff state clock=clk d=d q=q init=0 setup=2 hold=2

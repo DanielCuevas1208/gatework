@@ -1,0 +1,27 @@
+$date
+  generated deterministically by gatework
+$end
+$version
+  gatework 0.23.0.0
+$end
+$comment
+  setup violation on state: data d changed to 1 at time 0; clock clk rose at time 2
+  hold violation on state: data d changed to 0 at time 4; clock clk rose at time 2
+$end
+$timescale 1ns $end
+$scope module gatework $end
+$var wire 1 ! d $end
+$var wire 1 " q $end
+$var wire 1 # clk $end
+$upscope $end
+$enddefinitions $end
+#0
+1!
+0"
+0#
+#2
+1"
+1#
+#4
+0!
+0#

@@ -15,6 +15,8 @@ import Gatework.Netlist
   , Netlist (..)
   , dffClockToOutput
   , dffEnable
+  , dffHoldWindow
+  , dffSetupWindow
   , dffSyncReset
   , netlistAssertions
   , netlistSignals
@@ -28,6 +30,8 @@ import Gatework.Simulator
   ( AssertionFailure (..)
   , Simulation
   , Time
+  , TimingViolation (..)
+  , TimingViolationKind (..)
   , resolveValue
   , signalChanges
   , simulate
@@ -36,6 +40,7 @@ import Gatework.Simulator
   , simulationAssertions
   , simulationChanges
   , simulationFailures
+  , simulationTimingViolations
   )
 import Gatework.VCD (renderVCD)
 import System.Exit (exitFailure)
@@ -325,6 +330,15 @@ main = do
     , testClockToOutputZeroKeepsImmediate
     , testClockToOutputRegisterWidth
     , testGoldenClockToOutputVCD
+    , testParserAcceptsSetupHoldWindows
+    , testParserRejectsInvalidSetupHoldWindows
+    , testSetupHoldBoundaryFindings
+    , testTimingFindingsPreserveWaveform
+    , testSetupHoldOutsideWindowIsClean
+    , testZeroSetupHoldDisablesChecks
+    , testSetupHoldSameTimeDataAndClock
+    , testSetupHoldInModule
+    , testGoldenSetupHoldVCD
     , testParserAcceptsEnable
     , testParserRejectsInvalidEnable
     , testScheduledInputPrecedesClockEdge
@@ -2402,7 +2416,7 @@ testAnalysisIncludesTimingBusesAndAssertions =
       , "wire y[4]"
       , "clock clk period=2"
       , "gate BUF copy (a) -> y delay=2"
-      , "dff reg clock=clk d=y q=q init=0,0,0,0 tco=1 srst=srst"
+      , "dff reg clock=clk d=y q=q init=0,0,0,0 tco=1 srst=srst setup=2 hold=3"
       , "assert q[0] = 0 at 0"
       ]) of
     Left _ -> False
@@ -2414,6 +2428,8 @@ testAnalysisIncludesTimingBusesAndAssertions =
         , "delayed gates: 4"
         , "clock-to-output delays: 4"
         , "synchronous resets: 4"
+        , "setup windows: 4"
+        , "hold windows: 4"
         , "Assertions: 1"
         ]
 
@@ -2754,6 +2770,150 @@ testGoldenClockToOutputVCD = do
             [(4, "d", Low), (8, "d", High), (14, "rst", High), (16, "rst", Low)] 22
         pure (renderVCD simulation)
   check "tco VCD matches golden file" (actual == Right golden)
+
+testParserAcceptsSetupHoldWindows :: IO Bool
+testParserAcceptsSetupHoldWindows = case
+  parseNetlist (unlines
+    [ "input d"
+    , "output q"
+    , "clock clk period=8"
+    , "dff state clock=clk d=d q=q init=0 setup=2 hold=3"
+    ]) of
+    Left _ -> check "parser accepts setup and hold windows" False
+    Right netlist -> check "parser accepts setup and hold windows" $
+      case netlistFlipFlops netlist of
+        [flipFlop] -> dffSetupWindow flipFlop == 2 && dffHoldWindow flipFlop == 3
+        _ -> False
+
+testParserRejectsInvalidSetupHoldWindows :: IO Bool
+testParserRejectsInvalidSetupHoldWindows =
+  check "parser rejects invalid setup and hold windows" $
+    all (isLeft . parseNetlist . windowSource)
+      [ "setup=-1"
+      , "hold=-1"
+      , "setup=fast"
+      , "hold=fast"
+      , "setup=1 setup=2"
+      , "hold=1 hold=2"
+      ]
+  where
+    windowSource field = unlines
+      [ "input d"
+      , "output q"
+      , "clock clk period=8"
+      , "dff state clock=clk d=d q=q init=0 " ++ field
+      ]
+
+testSetupHoldBoundaryFindings :: IO Bool
+testSetupHoldBoundaryFindings = case parseNetlist setupHoldSource of
+  Left _ -> check "setup and hold boundaries produce findings" False
+  Right netlist -> check "setup and hold boundaries produce findings" $ case
+    simulateWithScheduledInputs netlist [ ("d", Low) ]
+      [ (2, "d", High), (6, "d", Low) ] 6 of
+    Left _ -> False
+    Right simulation -> simulationTimingViolations simulation ==
+      [ TimingViolation SetupViolation "state" "d" "clk" 4 2 High
+      , TimingViolation HoldViolation "state" "d" "clk" 4 6 Low
+      ]
+
+testTimingFindingsPreserveWaveform :: IO Bool
+testTimingFindingsPreserveWaveform = case
+  (parseNetlist setupHoldSource, parseNetlist zeroWindowSource) of
+    (Right withWindows, Right withoutWindows) -> check
+      "timing findings do not change the simulated waveform" $ case
+        ( simulateWithScheduledInputs withWindows [("d", Low)]
+            [(2, "d", High), (6, "d", Low)] 6
+        , simulateWithScheduledInputs withoutWindows [("d", Low)]
+            [(2, "d", High), (6, "d", Low)] 6
+        ) of
+        (Right withFindings, Right withoutFindings) ->
+          simulationChanges withFindings == simulationChanges withoutFindings
+        _ -> False
+    _ -> check "timing findings do not change the simulated waveform" False
+
+testSetupHoldOutsideWindowIsClean :: IO Bool
+testSetupHoldOutsideWindowIsClean = case parseNetlist setupHoldSource of
+  Left _ -> check "setup and hold outside-window changes stay clean" False
+  Right netlist -> check "setup and hold outside-window changes stay clean" $ case
+    simulateWithScheduledInputs netlist [ ("d", Low) ]
+      [ (1, "d", High), (7, "d", Low) ] 7 of
+    Left _ -> False
+    Right simulation -> null (simulationTimingViolations simulation)
+
+testZeroSetupHoldDisablesChecks :: IO Bool
+testZeroSetupHoldDisablesChecks = case parseNetlist zeroWindowSource of
+  Left _ -> check "zero setup and hold windows disable checks" False
+  Right netlist -> check "zero setup and hold windows disable checks" $ case
+    simulateWithScheduledInputs netlist [("d", Low)]
+      [(2, "d", High), (6, "d", Low)] 6 of
+    Left _ -> False
+    Right simulation -> null (simulationTimingViolations simulation)
+
+testSetupHoldSameTimeDataAndClock :: IO Bool
+testSetupHoldSameTimeDataAndClock = case parseNetlist sameTimeSetupSource of
+  Left _ -> check "same-time data and clock transitions report setup" False
+  Right netlist -> check "same-time data and clock transitions report setup" $ case
+    simulateWithScheduledInputs netlist [ ("d", Low) ] [(2, "d", High)] 2 of
+    Left _ -> False
+    Right simulation -> simulationTimingViolations simulation ==
+      [ TimingViolation SetupViolation "state" "d" "clk" 2 2 High
+      ]
+
+testSetupHoldInModule :: IO Bool
+testSetupHoldInModule = case parseNetlist moduleSetupHoldSource of
+  Left _ -> check "setup and hold windows survive module flattening" False
+  Right netlist -> check "setup and hold windows survive module flattening" $ case
+    simulateWithScheduledInputs netlist [ ("d", Low) ] [(2, "d", High)] 2 of
+    Left _ -> False
+    Right simulation -> simulationTimingViolations simulation ==
+      [ TimingViolation SetupViolation "u.state" "d" "clk" 2 2 High
+      ]
+
+testGoldenSetupHoldVCD :: IO Bool
+testGoldenSetupHoldVCD = do
+  source <- readFile "fixtures/setuphold.net"
+  golden <- readFile "fixtures/setuphold.golden.vcd"
+  let actual = do
+        netlist <- parseNetlist source
+        simulation <- simulateWithScheduledInputs netlist [ ("d", Low) ]
+          [ (0, "d", High), (4, "d", Low) ] 4
+        pure (renderVCD simulation)
+  check "setup and hold VCD matches golden file" (actual == Right golden)
+
+setupHoldSource :: String
+setupHoldSource = unlines
+  [ "input d"
+  , "output q"
+  , "clock clk period=8"
+  , "dff state clock=clk d=d q=q init=0 setup=2 hold=2"
+  ]
+
+sameTimeSetupSource :: String
+sameTimeSetupSource = unlines
+  [ "input d"
+  , "output q"
+  , "clock clk period=4"
+  , "dff state clock=clk d=d q=q init=0 setup=1 hold=1"
+  ]
+
+moduleSetupHoldSource :: String
+moduleSetupHoldSource = unlines
+  [ "input d"
+  , "output q"
+  , "clock clk period=4"
+  , "module stage (clk,d) -> (q)"
+  , "dff state clock=clk d=d q=q init=0 setup=1 hold=1"
+  , "end"
+  , "instance u stage (clk,d) -> (q)"
+  ]
+
+zeroWindowSource :: String
+zeroWindowSource = unlines
+  [ "input d"
+  , "output q"
+  , "clock clk period=8"
+  , "dff state clock=clk d=d q=q init=0 setup=0 hold=0"
+  ]
 
 testParserAcceptsEnable :: IO Bool
 testParserAcceptsEnable = case
